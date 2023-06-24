@@ -545,7 +545,7 @@ def training_runner(
                 net_g.load_state_dict(net_g_state)
 
             del net_g_state
-            torch.nn.init.normal_(net_g.emb_g.weight)
+            net_g.emb_g.weight.data = torch.ones_like(net_g.emb_g.weight.data) * torch.mean(net_g.emb_g.weight.data, dim=0, keepdim=True)
 
             if is_multi_process:
                 net_d.module.load_state_dict(
