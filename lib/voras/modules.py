@@ -234,8 +234,8 @@ class ConvNext2d(torch.nn.Module):
         self.dwconv = norm_f(Conv2d(in_channels, in_channels, kernel_size, stride, groups=in_channels))
         self.pwconv1 = LoRALinear2d(in_channels, inner_channels, gin_channels, r=r)
         self.pwconv2 = LoRALinear2d(inner_channels, out_channels, gin_channels, r=r)
-        self.act = nn.GELU()
         self.norm = LayerNorm(in_channels)
+        self.act = nn.GELU()
 
     def forward(self, x, g):
         x = F.pad(x, [0, 0, self.kernel_size[0] - 1, 0], mode="constant")
@@ -494,3 +494,9 @@ class IMDCTSymExpHead(FourierHead):
 
 def symexp(x: torch.Tensor) -> torch.Tensor:
     return torch.sign(x) * (torch.exp(x.abs()) - 1)
+
+def safe_power(a, x):
+    return torch.sign(x) * torch.pow(a, torch.clamp(torch.abs(x), min=1e-5))
+
+def gap2d(x):
+    return safe_power(1/3, safe_power(3., x).mean(dim=(2, 3)))

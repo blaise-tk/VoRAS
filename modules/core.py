@@ -32,8 +32,8 @@ def calc_sha256(filepath: str):
 
 def download_models():
     def hash_check(url: str, out: str):
-        if not os.path.exists(out):
-            return False
+        return os.path.exists(out)
+        #    return False
         etag = get_hf_etag(url)
         hash = calc_sha256(out)
         return etag == hash

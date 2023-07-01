@@ -45,7 +45,7 @@ class MelLoss(nn.Module):
         S_pred = torch.log(torch.clamp(self.melspec(x_pred), min=self.eps))
 
         loss = F.l1_loss(S_true, S_pred)
-        return loss
+        return loss, S_true, S_pred
 
 
 def feature_loss(fmap_r, fmap_g):

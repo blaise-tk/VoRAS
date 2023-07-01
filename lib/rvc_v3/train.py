@@ -450,7 +450,7 @@ def training_runner(
         persistent_workers=True,
         prefetch_factor=2,
     )
-
+    
     net_g = SynthesizerTrnMs256NSFSid(
         config.data.filter_length // 2 + 1,
         config.train.segment_size // config.data.hop_length,

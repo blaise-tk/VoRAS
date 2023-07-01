@@ -256,6 +256,7 @@ class Training(Tab):
                 augment,
                 augment_path,
                 speaker_info_path,
+                multiple_speakers,
                 cache_batch,
                 num_epochs,
                 save_every_epoch,
@@ -316,7 +317,7 @@ class Training(Tab):
                             label="Target sampling rate",
                         )
                         f0 = gr.Radio(
-                            choices=["Yes"],
+                            choices=["Yes", "No"],
                             value="Yes",
                             label="f0 Model",
                         )
