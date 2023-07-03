@@ -1,13 +1,16 @@
 import os
 import traceback
+from random import randint
 
 import numpy as np
 import torch
 import torch.utils.data
+import torchaudio
 
-from .config import DatasetMetadata, DatasetMetaItem, TrainConfigData
+from .config import (DatasetMetadata, DatasetMetaItem, RawDatasetMetadata,
+                     RawDatasetMetaItem, TrainConfigData)
 from .mel_processing import spectrogram_torch
-from .utils import load_wav_to_torch
+from .utils import load_audio, load_wav_to_torch
 
 
 class TextAudioLoader(torch.utils.data.Dataset):
@@ -79,14 +82,15 @@ class TextAudioLoader(torch.utils.data.Dataset):
         phone = torch.FloatTensor(phone)
         return phone
 
-    def get_audio(self, filename):
-        audio, sampling_rate = load_wav_to_torch(filename)
-        if sampling_rate != self.sampling_rate:
-            raise ValueError(
-                "{} SR doesn't match target {} SR".format(
-                    sampling_rate, self.sampling_rate
-                )
-            )
+    def get_audio(self, filename: str):
+        if filename.endswith(".wav"):
+            audio, sampling_rate = load_wav_to_torch(filename)
+            if sampling_rate != self.sampling_rate:
+                audio = torchaudio.functional.resample(audio, sampling_rate, self.sampling_rate, rolloff=0.99)
+        else:
+            audio = load_audio(filename, self.sampling_rate)
+            audio = torch.FloatTensor(audio)
+
         # audio_norm = audio / self.max_wav_value
         audio_norm = audio.unsqueeze(0)
         spec_filename = filename.replace(".wav", ".spec.pt")
@@ -126,14 +130,14 @@ class TextAudioLoader(torch.utils.data.Dataset):
         return len(self.dataset_meta.files)
 
 
-class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
+class RawTextAudioLoader(torch.utils.data.Dataset):
     """
     1) loads audio, text pairs
     2) normalizes text and converts them to sequences of integers
     3) computes spectrograms from audio files.
     """
 
-    def __init__(self, dataset_meta: DatasetMetadata, data: TrainConfigData):
+    def __init__(self, dataset_meta: RawDatasetMetadata, data: TrainConfigData):
         self.dataset_meta = dataset_meta
         self.max_wav_value = data.max_wav_value
         self.sampling_rate = data.sampling_rate
@@ -141,6 +145,8 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         self.hop_length = data.hop_length
         self.win_length = data.win_length
         self.sampling_rate = data.sampling_rate
+        self.segment_size = data.segment_size
+        self.pre_silence = data.pre_silence
         self.min_text_len = getattr(data, "min_text_len", 1)
         self.max_text_len = getattr(data, "max_text_len", 5000)
         self._filter()
@@ -153,110 +159,49 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         # wav_length ~= file_size / (wav_channels * Bytes per dim) = file_size / (1 * 2)
         # spec_length = wav_length // hop_length
         lengths = []
-        for key, data in self.dataset_meta.files.items():
-            if (
-                self.min_text_len <= len(data.co256)
-                and len(data.co256) <= self.max_text_len
-            ):
-                lengths.append(os.path.getsize(data.gt_wav) // (2 * self.hop_length))
-            else:
-                del self.dataset_meta.files[key]
+        for data in self.dataset_meta.files:
+            lengths.append(os.path.getsize(data.raw_file) // (2 * self.hop_length))
         self.lengths = lengths
 
     def get_sid(self, sid):
         sid = torch.LongTensor([int(sid)])
         return sid
 
-    def get_audio_text_pair(self, data: DatasetMetaItem):
+    def get_audio_text_pair(self, data: RawDatasetMetaItem):
         # separate filename and text
-        file = data.gt_wav
-        phone = data.co256
-        pitch = data.f0
-        pitchf = data.f0nsf
+        file = data.raw_file
         dv = data.speaker_id
 
-        phone, pitch, pitchf = self.get_labels(phone, pitch, pitchf)
-        spec, wav = self.get_audio(file)
+        wav = self.get_audio(file)
         dv = self.get_sid(dv)
-
-        len_phone = phone.size()[0]
-        len_spec = spec.size()[-1]
-        # print(123,phone.shape,pitch.shape,spec.shape)
-        if len_phone != len_spec:
-            len_min = min(len_phone, len_spec)
-            # amor
-            len_wav = len_min * self.hop_length
-
-            spec = spec[:, :len_min]
-            wav = wav[:, :len_wav]
-
-            phone = phone[:len_min, :]
-            pitch = pitch[:len_min]
-            pitchf = pitchf[:len_min]
-
-        return (spec, wav, phone, pitch, pitchf, dv)
-
-    def get_labels(self, phone, pitch, pitchf):
-        phone = np.load(phone)
-        phone = np.repeat(phone, 2, axis=0)
-        pitch = np.load(pitch)
-        pitchf = np.load(pitchf)
-        n_num = min(phone.shape[0], 900)  # DistributedBucketSampler
-        # print(234,phone.shape,pitch.shape)
-        phone = phone[:n_num, :]
-        pitch = pitch[:n_num]
-        pitchf = pitchf[:n_num]
-        phone = torch.FloatTensor(phone)
-        pitch = torch.LongTensor(pitch)
-        pitchf = torch.FloatTensor(pitchf)
-        return phone, pitch, pitchf
+        return (wav, dv)
 
     def get_audio(self, filename):
-        audio, sampling_rate = load_wav_to_torch(filename)
-        if sampling_rate != self.sampling_rate:
-            raise ValueError(
-                "{} SR doesn't match target {} SR".format(
-                    sampling_rate, self.sampling_rate
-                )
-            )
-        # audio_norm = audio / self.max_wav_value
-        audio_norm = audio.unsqueeze(0)
-        spec_filename = filename.replace(".wav", ".spec.pt")
-        if os.path.exists(spec_filename):
-            try:
-                spec = torch.load(spec_filename)
-            except:
-                print(spec_filename, traceback.format_exc())
-                spec = spectrogram_torch(
-                    audio_norm,
-                    self.filter_length,
-                    self.sampling_rate,
-                    self.hop_length,
-                    self.win_length,
-                    center=False,
-                )
-                spec = torch.squeeze(spec, 0)
-                torch.save(spec, spec_filename, _use_new_zipfile_serialization=False)
+        if filename.endswith(".wav"):
+            audio, sampling_rate = load_wav_to_torch(filename)
+            if sampling_rate != self.sampling_rate:
+                audio = torchaudio.functional.resample(audio, sampling_rate, self.sampling_rate, rolloff=0.99)
         else:
-            spec = spectrogram_torch(
-                audio_norm,
-                self.filter_length,
-                self.sampling_rate,
-                self.hop_length,
-                self.win_length,
-                center=False,
-            )
-            spec = torch.squeeze(spec, 0)
-            torch.save(spec, spec_filename, _use_new_zipfile_serialization=False)
-        return spec, audio_norm
+            audio = load_audio(filename, self.sampling_rate)
+            audio = torch.FloatTensor(audio)
+
+        audio_norm = audio / self.max_wav_value
+        if len(audio_norm.shape) == 1:
+            audio_norm = audio_norm.unsqueeze(0)
+        elif audio_norm.shape[0] == 2:
+            audio_norm = audio_norm.mean(dim=0, keepdim=True)
+        audio_trimed = torch.zeros([1, self.segment_size])
+        start = max(0, randint(-self.pre_silence, audio.shape[1] - self.segment_size))
+        audio = audio[:, start:start+self.segment_size]
+        audio_trimed[:, -audio.shape[1]:] = 
+        return audio_norm
 
     def __getitem__(self, index):
-        _, data = list(self.dataset_meta.files.items())[index]
+        data = self.dataset_meta.files[index]
         return self.get_audio_text_pair(data)
 
     def __len__(self):
         return len(self.dataset_meta.files)
-
 
 class TextAudioCollateMultiNSFsid:
     """Zero-pads model inputs and targets"""

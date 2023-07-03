@@ -13,7 +13,6 @@ class TrainConfigTrain(BaseModel):
     batch_size: int
     fp16_run: bool
     lr_decay: float
-    segment_size: int
     init_lr_ratio: int
     warmup_epochs: int
     c_mel: int
@@ -26,6 +25,8 @@ class TrainConfigData(BaseModel):
     filter_length: int
     hop_length: int
     win_length: int
+    segment_size: int
+    pre_silence: int
     n_mel_channels: int
     mel_fmin: float
     mel_fmax: Any
@@ -59,3 +60,13 @@ class DatasetMetaItem(BaseModel):
 class DatasetMetadata(BaseModel):
     files: Dict[str, DatasetMetaItem]
     # mute: DatasetMetaItem
+
+
+class RawDatasetMetaItem(BaseModel):
+    raw_file: str
+    speaker_id: int
+
+
+class RawDatasetMetadata(BaseModel):
+    type: Optional[str]
+    files: List[RawDatasetMetaItem]

@@ -24,7 +24,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from . import commons, utils
 from .checkpoints import save
-from .config import DatasetMetadata, TrainConfig
+from .config import DatasetMetadata, RawDatasetMetadata, TrainConfig
 from .data_utils import (DistributedBucketSampler, TextAudioCollate,
                          TextAudioCollateMultiNSFsid, TextAudioLoader,
                          TextAudioLoaderMultiNSFsid)
@@ -56,47 +56,74 @@ def glob_dataset(
     speaker_id: int,
     multiple_speakers: bool = False,
     recursive: bool = True,
+    raw_dataset: bool = True,
+    training_dir: str | None = None
 ):
     globs = glob_str.split(",")
+    speaker_count = 0
     datasets_speakers = []
+    speaker_to_id_mapping = {}
+    meta = {
+        "type": "raw_dataset",
+        "files": []
+    }
     for glob_str in globs:
-        if os.path.isdir(glob_str):
-            files = os.listdir(glob_str)
-            if multiple_speakers:
-                # pattern: {glob_str}/{decimal}[_]* and isdir
-                multi_speakers_dir = [
-                    (os.path.join(glob_str, f), int(f.split("_")[0]))
-                    for f in files
-                    if os.path.isdir(os.path.join(glob_str, f))
-                    and f.split("_")[0].isdecimal()
-                ]
-
-                if len(multi_speakers_dir) > 0:
-                    # multi speakers at once train
-                    datasets_speakers = [
-                        (file, dir[1])
-                        for dir in multi_speakers_dir
-                        for file in glob.iglob(
-                            os.path.join(dir[0], "*"), recursive=recursive
-                        )
-                        if is_audio_file(file)
-                    ]
+        if not os.path.isdir(glob_str):
+            continue
+        if multiple_speakers:
+            # Multispeaker format:
+            # dataset_path/
+            # - speakername/
+            #     - {wav name here}.wav
+            #     - ...
+            # - next_speakername/
+            #     - {wav name here}.wav
+            #     - ...
+            # - ...
+            print("Multispeaker dataset enabled; Processing speakers.")
+            datasets_speakers = []
+            for dir in tqdm.tqdm(os.listdir(glob_str)):
+                if not os.path.isdir(os.path.join(glob_str, dir)):
                     continue
-
+                speaker_to_id_mapping[dir] = speaker_count
+                speaker_path = os.path.join(glob_str, dir)
+                datasets_speaker = [
+                    (file, speaker_count)
+                    for file in glob.iglob(
+                        os.path.join(speaker_path, "*"), recursive=recursive
+                    )
+                    if is_audio_file(file)
+                ]
+                if len(datasets_speaker):
+                    print("Speaker ID " + str(speaker_count) + ": " + dir)
+                    if raw_dataset:
+                        meta["files"].extend([{"raw_file": file, "speaker_id": speaker_id} for file, speaker_id in datasets_speaker])
+                    datasets_speakers.extend(datasets_speaker)
+                    speaker_count += 1
+            with open(os.path.join(training_dir, "speaker_info.json"), "w") as outfile:
+                print("Dumped speaker info to ./speaker_info.json")
+                json.dump(speaker_to_id_mapping, outfile)
+        else:
             glob_str = os.path.join(glob_str, "**", "*")
-
-        datasets_speakers.extend(
-            [
-                (file, speaker_id)
-                for file in glob.iglob(glob_str, recursive=recursive)
-                if is_audio_file(file)
-            ]
-        )
-
-    return sorted(datasets_speakers, key=operator.itemgetter(0))
+            print("Single speaker dataset enabled; Processing speaker as ID " + str(speaker_id) + ".")
+            datasets_speakers.extend(
+                [
+                    (file, speaker_id)
+                    for file in glob.iglob(glob_str, recursive=recursive)
+                    if is_audio_file(file)
+                ]
+            )
+            if raw_dataset:
+                meta["files"].extend([{"raw_file": file, "speaker_id": speaker_id} for file, speaker_id in datasets_speakers])
+    if raw_dataset and not training_dir is None:
+        with open(os.path.join(training_dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+    return sorted(datasets_speakers)
 
 
 def create_dataset_meta(training_dir: str, f0: bool):
+    if os.path.exists(os.path.join(training_dir, "meta.json")):
+        return
     gt_wavs_dir = os.path.join(training_dir, "0_gt_wavs")
     co256_dir = os.path.join(training_dir, "3_feature256")
 
@@ -116,6 +143,7 @@ def create_dataset_meta(training_dir: str, f0: bool):
         names = names & set(list_data(f0_dir)) & set(list_data(f0nsf_dir))
 
     meta = {
+        "type": "processed_dataset",
         "files": {},
     }
 
@@ -143,60 +171,8 @@ def create_dataset_meta(training_dir: str, f0: bool):
                 "speaker_id": speaker_id,
             }
 
-    with open(os.path.join(training_dir, "meta.json"), "w") as f:
-        json.dump(meta, f, indent=2)
-
-
-def change_speaker(net_g, speaker_info, embedder, embedding_output_layer, phone, phone_lengths, pitch, pitchf, spec_lengths):
-    """
-    random change formant
-    inspired by https://github.com/auspicious3000/contentvec/blob/d746688a32940f4bee410ed7c87ec9cf8ff04f74/contentvec/data/audio/audio_utils_1.py#L179
-    """
-    N = phone.shape[0]
-    device = phone.device
-    dtype = phone.dtype
-
-    f0_bin = 256
-    f0_max = 1100.0
-    f0_min = 50.0
-    f0_mel_min = 1127 * np.log(1 + f0_min / 700)
-    f0_mel_max = 1127 * np.log(1 + f0_max / 700)
-
-    pitch_median = torch.median(pitchf, 1).values
-    lo = 75. + 25. * (pitch_median >= 200).to(dtype=dtype)
-    hi = 250. + 150. * (pitch_median >= 200).to(dtype=dtype)
-    pitch_median = torch.clip(pitch_median, lo, hi).unsqueeze(1)
-
-    shift_pitch = torch.exp2((1. - 2. * torch.rand(N)) / 4).unsqueeze(1).to(device, dtype)   # ピッチを.5オクターブの範囲でずらす
-
-    new_sid = np.random.choice(np.arange(len(speaker_info))[speaker_info > 0], size=N)
-    rel_pitch = pitchf / pitch_median
-    new_pitch_median = torch.from_numpy(speaker_info[new_sid]).to(device, dtype).unsqueeze(1) * shift_pitch
-    new_pitchf = new_pitch_median * rel_pitch
-    new_sid = torch.from_numpy(new_sid).to(device)
-
-    new_pitch = 1127. * torch.log(1. + new_pitchf / 700.)
-    new_pitch = (pitch - f0_mel_min) * (f0_bin - 2.) / (f0_mel_max - f0_mel_min) + 1.
-    new_pitch = torch.clip(new_pitch, 1, f0_bin - 1).to(dtype=torch.int)
-
-    new_wave = net_g.infer(phone, phone_lengths, new_pitch, new_pitchf, new_sid)[0]
-    new_wave_16k = torchaudio.functional.resample(new_wave, net_g.sr, 16000, rolloff=0.99).squeeze(1)
-    padding_mask = torch.arange(new_wave_16k.shape[1]).unsqueeze(0).to(device) > (spec_lengths.unsqueeze(1) * 160).to(device)
-
-    inputs = {
-        "source": new_wave_16k.to(device, dtype),
-        "padding_mask": padding_mask.to(device),
-        "output_layer": embedding_output_layer
-    }
-    logits = embedder.extract_features(**inputs)
-    if phone.shape[-1] == 768:
-        feats = logits[0]
-    else:
-        feats = embedder.final_proj(logits[0])
-    feats = torch.repeat_interleave(feats, 2, 1)
-    new_phone = torch.zeros(phone.shape).to(device, dtype)
-    new_phone[:, :feats.shape[1]] = feats[:, :phone.shape[1]]
-    return new_phone.to(device), new_wave
+    with open(os.path.join(training_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
 
 
 def change_speaker_nono(net_g, embedder, embedding_output_layer, phone, phone_lengths, spec_lengths):
@@ -431,8 +407,6 @@ def training_runner(
     config.train.batch_size = batch_size
     log_dir = os.path.join(training_dir, "logs")
     state_dir = os.path.join(training_dir, "state")
-    training_files_path = os.path.join(training_dir, "meta.json")
-    training_meta = DatasetMetadata.parse_file(training_files_path)
     embedder_out_channels = config.model.emb_channels
 
     is_multi_process = world_size > 1
@@ -457,11 +431,17 @@ def training_runner(
         torch.cuda.set_device(rank)
 
     torch.manual_seed(config.train.seed)
+    training_files_path = os.path.join(training_dir, "meta.json")
+    with open(training_files_path, encoding="utf-8") as f:
+        d = json.load(f)
 
-    if f0:
-        train_dataset = TextAudioLoaderMultiNSFsid(training_meta, config.data)
-    else:
+    processed_data = not "type" in d.keys() or d["type"] == "processed_dataset"
+    if processed_data:
+        training_meta = DatasetMetadata.parse_file(training_files_path)
         train_dataset = TextAudioLoader(training_meta, config.data)
+    else:
+        training_meta = RawDatasetMetadata.parse_file(training_files_path)
+
 
     train_sampler = DistributedBucketSampler(
         train_dataset,
@@ -472,9 +452,7 @@ def training_runner(
         shuffle=True,
     )
 
-    if f0:
-        collate_fn = TextAudioCollateMultiNSFsid()
-    else:
+    if processed_data:
         collate_fn = TextAudioCollate()
 
     train_loader = DataLoader(
@@ -629,8 +607,8 @@ def training_runner(
     #    optimizer=optim_g,
     #    first_cycle_steps=len(train_loader) * 10,
     #    cycle_mult=1,
-    ##    max_lr=config.train.learning_rate * 5,
-    #   min_lr=config.train.learning_rate / 2,
+    #    max_lr=config.train.learning_rate * 5,
+    #    min_lr=config.train.learning_rate / 2,
     #    warmup_steps=len(train_loader) * 5,
     #    gamma=.8,
     #    last_epoch=-1
