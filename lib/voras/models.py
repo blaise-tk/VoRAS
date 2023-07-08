@@ -56,7 +56,8 @@ class GeneratorVoras(torch.nn.Module):
         return torch.tanh(x)
 
     def remove_weight_norm(self):
-        remove_weight_norm(self.glinear)
+        remove_weight_norm(self.g_in_linear)
+        remove_weight_norm(self.g_out_linear)
         for l in self.resblocks:
             l.remove_weight_norm()
         self.init_linear.remove_weight_norm()
@@ -172,19 +173,19 @@ class Synthesizer(nn.Module):
             "emb_channels:",
             emb_channels,
         )
-        self.target_speaker = None
-        self.source_speaker = None
+
+        self.speaker = [None, None]
 
     def remove_weight_norm(self):
         self.dec.remove_weight_norm()
 
-    def change_speaker(self, sid: int):
-        if self.speaker is not None:
-            g = self.emb_g(torch.from_numpy(np.array(self.target_speaker))).unsqueeze(-1)
-            self.dec.unfix_speaker(1, g)
-        g = self.emb_g(torch.from_numpy(np.array(sid))).unsqueeze(-1)
-        self.dec.fix_speaker(1, g)
-        self.target_speaker = sid
+    def change_speaker(self, target, sid: int):
+        if self.speaker[target] is not None:
+            g = self.emb_g(torch.tensor(self.speaker[target]).to(self.emb_g.weight.data.device)).unsqueeze(-1)
+            self.dec.unfix_speaker(target, g)
+        g = self.emb_g(torch.tensor(sid).to(self.emb_g.weight.data.device)).unsqueeze(-1)
+        self.dec.fix_speaker(target, g)
+        self.speaker[target] = sid
 
     def forward(
         self, phone, y_16k, ds

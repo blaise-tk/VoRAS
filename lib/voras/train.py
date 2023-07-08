@@ -64,6 +64,7 @@ def glob_dataset(
         "type": "raw_dataset",
         "files": []
     }
+    datasets_speakers = []
     for glob_str in globs:
         if not os.path.isdir(glob_str):
             continue
@@ -78,7 +79,6 @@ def glob_dataset(
             #     - ...
             # - ...
             print("Multispeaker dataset enabled; Processing speakers.")
-            datasets_speakers = []
             for dir in tqdm.tqdm(os.listdir(glob_str)):
                 if not os.path.isdir(os.path.join(glob_str, dir)):
                     continue
@@ -87,7 +87,7 @@ def glob_dataset(
                 datasets_speaker = [
                     (file, speaker_count)
                     for file in glob.iglob(
-                        os.path.join(speaker_path, "*"), recursive=recursive
+                        os.path.join(speaker_path, "**", "*"), recursive=recursive
                     )
                     if is_audio_file(file)
                 ]
@@ -95,9 +95,6 @@ def glob_dataset(
                     print("Speaker ID " + str(speaker_count) + ": " + dir)
                     datasets_speakers.extend(datasets_speaker)
                     speaker_count += 1
-            with open(os.path.join(training_dir, "speaker_info.json"), "w") as outfile:
-                print("Dumped speaker info to ./speaker_info.json")
-                json.dump(speaker_to_id_mapping, outfile)
         else:
             glob_str = os.path.join(glob_str, "**", "*")
             print("Single speaker dataset enabled; Processing speaker as ID " + str(0) + ".")
@@ -108,6 +105,10 @@ def glob_dataset(
                     if is_audio_file(file)
                 ]
             )
+    if len(speaker_to_id_mapping):
+        with open(os.path.join(training_dir, "speaker_info.json"), "w") as outfile:
+            print("Dumped speaker info to ./speaker_info.json")
+            json.dump(speaker_to_id_mapping, outfile)
     return sorted(datasets_speakers)
 
 
@@ -339,6 +340,11 @@ def training_runner(
         prefetch_factor=2,
     )
 
+    speaker_info = None
+    if os.path.exists(os.path.join(training_dir, "speaker_info.json")):
+        with open(os.path.join(training_dir, "speaker_info.json"), "r") as f:
+            speaker_info = json.load(f)
+            config.model.spk_embed_dim = len(speaker_info)
 
     net_g = Synthesizer(
         config.data.segment_size // config.data.hop_length,
@@ -359,10 +365,6 @@ def training_runner(
 
     periods = [1, 2, 3, 5, 7, 11, 17, 23, 37]
     net_d = MultiPeriodDiscriminator(periods=periods, **config.model.dict())
-    if is_multi_process:
-        net_d = net_d.cuda(rank)
-    else:
-        net_d = net_d.to(device=device)
 
     # in GAN, weight decay inn't need
     # https://github.com/juntang-zhuang/Adabelief-Optimizer
@@ -388,39 +390,21 @@ def training_runner(
     last_d_state = utils.latest_checkpoint_path(state_dir, "D_*.pth")
     last_g_state = utils.latest_checkpoint_path(state_dir, "G_*.pth")
 
-    if augment:
-        # load embedder
-        embedder_filepath, _, embedder_load_from = get_embedder(embedder_name)
-
-        if embedder_load_from == "local":
-            embedder_filepath = os.path.join(
-                MODELS_DIR, "embeddings", embedder_filepath
-            )
-        embedder, _ = load_embedder(embedder_filepath, device)
-
-        if (augment_path is not None):
-            state_dict = torch.load(augment_path, map_location="cpu")
-            augment_net_g = Synthesizer(
-                **state_dict["params"], is_half=False
-            )
-            augment_net_g.load_state_dict(state_dict["weight"], strict=False)
-            augment_net_g.eval().to(device)
-            augment_net_g.remove_weight_norm()
-        else:
-            augment_net_g = net_g
-
     if last_d_state is None or last_g_state is None:
         epoch = 1
         global_step = 0
         if os.path.exists(pretrain_g) and os.path.exists(pretrain_d):
             net_g_state = torch.load(pretrain_g, map_location="cpu")["model"]
+
+            emb_spk_size = (config.model.spk_embed_dim, config.model.gin_channels)
+            if emb_spk_size != net_g_state["emb_g.weight"].size():
+                original_weight = net_g_state["emb_g.weight"]
+                net_g_state["emb_g.weight"] = original_weight.mean(dim=0, keepdims=True) * torch.ones(emb_spk_size, device=original_weight.device, dtype=original_weight.dtype)
             if is_multi_process:
                 net_g.module.load_state_dict(net_g_state)
             else:
                 net_g.load_state_dict(net_g_state)
-
             del net_g_state
-            net_g.emb_g.weight.data = torch.ones_like(net_g.emb_g.weight.data) * torch.mean(net_g.emb_g.weight.data, dim=0, keepdim=True)
 
             if is_multi_process:
                 net_d.module.load_state_dict(
@@ -442,6 +426,32 @@ def training_runner(
         epoch += 1
         global_step = (epoch - 1) * len(train_loader)
 
+    if augment:
+        # load embedder
+        embedder_filepath, _, embedder_load_from = get_embedder(embedder_name)
+
+        if embedder_load_from == "local":
+            embedder_filepath = os.path.join(
+                MODELS_DIR, "embeddings", embedder_filepath
+            )
+        embedder, _ = load_embedder(embedder_filepath, device)
+
+        if (augment_path is not None):
+            state_dict = torch.load(augment_path, map_location="cpu")
+            augment_net_g = Synthesizer(
+                **state_dict["params"], is_half=False
+            )
+            augment_net_g.load_state_dict(state_dict["weight"], strict=False)
+            augment_net_g.eval().to(device)
+            augment_net_g.remove_weight_norm()
+        else:
+            augment_net_g = net_g
+
+    if is_multi_process:
+        net_d = net_d.cuda(rank)
+    else:
+        net_d = net_d.to(device=device)
+
     if finetuning:
         scheduler_g = torch.optim.lr_scheduler.ExponentialLR(
             optim_g, gamma=config.train.lr_decay, last_epoch=epoch - 2
@@ -452,23 +462,23 @@ def training_runner(
     else:
         scheduler_g = CosineAnnealingWarmupRestarts(
             optimizer=optim_g,
-            first_cycle_steps=len(train_loader) * 5,
+            first_cycle_steps=len(train_loader),
             cycle_mult=1,
             max_lr=config.train.learning_rate * 5,
             min_lr=config.train.learning_rate,
             first_lr=config.train.learning_rate / 10,
-            warmup_steps=int(len(train_loader) * 2.5),
+            warmup_steps=int(len(train_loader) * .5),
             gamma=.9,
             last_epoch=-1
         )
         scheduler_d = CosineAnnealingWarmupRestarts(
             optimizer=optim_d,
-            first_cycle_steps=len(train_loader) * 5,
+            first_cycle_steps=len(train_loader),
             cycle_mult=1,
             max_lr=config.train.learning_rate * 5,
             min_lr=config.train.learning_rate,
             first_lr=config.train.learning_rate / 10,
-            warmup_steps=int(len(train_loader) * 2.5),
+            warmup_steps=int(len(train_loader) * .5),
             gamma=.9,
             last_epoch=-1
         )
@@ -484,7 +494,6 @@ def training_runner(
         f_max=config.data.mel_fmax
     ).to(device=device)
 
-    cache = []
     progress_bar = tqdm.tqdm(range((total_epoch - epoch + 1) * len(train_loader)))
     progress_bar.set_postfix(epoch=epoch)
     step = -1 + len(train_loader) * (epoch - 1)
@@ -495,14 +504,10 @@ def training_runner(
         net_g.train()
         net_d.train()
 
-        use_cache = len(cache) == len(train_loader)
-        data = cache if use_cache else enumerate(train_loader)
+        data = enumerate(train_loader)
 
         if is_main_process:
             lr = optim_g.param_groups[0]["lr"]
-
-        if use_cache:
-            shuffle(cache)
 
         for batch_idx, batch in data:
             step += 1
@@ -530,9 +535,9 @@ def training_runner(
                 awp.perturb()
             with autocast(enabled=config.train.fp16_run, dtype=torch.bfloat16):
                 with torch.no_grad():
-                    if augment and step > 2.5 * len(train_loader):
+                    if augment and (finetuning or (step > .5 * len(train_loader))):
                         new_phone, new_wave, new_wave_16k = change_speaker(augment_net_g, embedder, embedding_output_layer, phone, wave_16k)
-                        weight = 1 - np.power(.65, (step - 2.5 * len(train_loader)) / len(train_loader)) # 学習の初期はそのままのphone embeddingを使う
+                        weight = 1 - np.power(.65, (step - .5 * len(train_loader) * (1 - finetuning)) / len(train_loader)) # 学習の初期はそのままのphone embeddingを使う
                     else:
                         new_phone, new_wave, new_wave_16k = phone.detach(), wave.detach(), wave_16k.detach()
                         weight = 1.
@@ -628,14 +633,14 @@ def training_runner(
                     loss_g=float(loss_gen_all) if loss_gen_all is not None else 0.0,
                     loss_d=float(loss_disc) if loss_disc is not None else 0.0,
                     lr=float(lr) if lr is not None else 0.0,
-                    use_cache=use_cache,
+                    use_cache=0,
                 )
                 if global_step % config.train.log_interval == 0:
                     y_hat = torch.clip(y_hat, min=-1., max=1.)
                     for i in range(4):
                         torchaudio.save(filepath=os.path.join(training_dir, "logs", f"y_true_{i:02}.wav"), src=wave[i].detach().cpu().float(), sample_rate=int(sample_rate[:-1] + "000"))
                         torchaudio.save(filepath=os.path.join(training_dir, "logs", f"y_pred_{i:02}.wav"), src=y_hat[i].detach().cpu().float(), sample_rate=int(sample_rate[:-1] + "000"))
-                        if augment and step > 2.5 * len(train_loader):
+                        if augment and (finetuning or (step > .5 * len(train_loader))):
                             torchaudio.save(filepath=os.path.join(training_dir, "logs", f"y_aug_{i:02}.wav"), src=new_wave[i].detach().cpu().float(), sample_rate=int(sample_rate[:-1] + "000"))
                     lr = optim_g.param_groups[0]["lr"]
                     # Amor For Tensorboard display
@@ -724,6 +729,7 @@ def training_runner(
                 embedding_output_layer,
                 os.path.join(training_dir, "checkpoints", f"{model_name}-{epoch}.pth"),
                 epoch,
+                speaker_info
             )
 
     if is_main_process:
@@ -738,4 +744,5 @@ def training_runner(
             embedding_output_layer,
             os.path.join(out_dir, f"{model_name}.pth"),
             epoch,
+            speaker_info
         )

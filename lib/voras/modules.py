@@ -110,15 +110,15 @@ class LoRALinear1d(nn.Module):
 
     def fix_speaker(self, i, g):
         self.speaker_fixed[i] = True
-        a_in = self.adapter_in[i](g).view(-1, self.in_channels, self.r)
-        a_out = self.adapter_out[i](g).view(-1, self.r, self.out_channels)
+        a_in = self.adapter_in[i](g).view(-1, self.in_channels, self.rs[i])
+        a_out = self.adapter_out[i](g).view(-1, self.rs[i], self.out_channels)
         weight = torch.einsum("bir,bro->oi", a_in, a_out).unsqueeze(2)
         self.main_fc.weight.data.add_(weight)
 
     def unfix_speaker(self, i, g):
         self.speaker_fixed[i] = False
-        a_in = self.adapter_in[i](g).view(-1, self.in_channels, self.r)
-        a_out = self.adapter_out[i](g).view(-1, self.r, self.out_channels)
+        a_in = self.adapter_in[i](g).view(-1, self.in_channels, self.rs[i])
+        a_out = self.adapter_out[i](g).view(-1, self.rs[i], self.out_channels)
         weight = torch.einsum("bir,bro->oi", a_in, a_out).unsqueeze(2)
         self.main_fc.weight.data.sub_(weight)
 
@@ -456,13 +456,13 @@ class IMDCTSymExpHead(FourierHead):
         self.pconv1.remove_weight_norm()
         self.pconv2.remove_weight_norm()
 
-    def fix_speaker(self, g):
-        self.pconv1.fix_speaker(g)
-        self.pconv2.fix_speaker(g)
+    def fix_speaker(self, i, g):
+        self.pconv1.fix_speaker(i, g)
+        self.pconv2.fix_speaker(i, g)
 
-    def unfix_speaker(self, g):
-        self.pconv1.unfix_speaker(g)
-        self.pconv2.unfix_speaker(g)
+    def unfix_speaker(self, i, g):
+        self.pconv1.unfix_speaker(i, g)
+        self.pconv2.unfix_speaker(i, g)
 
 def symexp(x: torch.Tensor) -> torch.Tensor:
     return torch.sign(x) * (torch.exp(x.abs()) - 1)
