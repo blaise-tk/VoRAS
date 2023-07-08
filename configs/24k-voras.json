@@ -20,11 +20,11 @@
   "data": {
     "max_wav_value": 32768.0,
     "sampling_rate": 24000,
-    "filter_length": 1024,
-    "segment_size": 48000,
-    "pre_silence": 12000,
+    "filter_length": 960,
+    "segment_size": 36000,
+    "pre_silence": 0,
     "hop_length": 240,
-    "win_length": 1024,
+    "win_length": 960,
     "n_mel_channels": 128,
     "mel_fmin": 0.0,
     "mel_fmax": null

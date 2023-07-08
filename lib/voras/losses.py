@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torchaudio
@@ -83,3 +84,16 @@ def generator_loss(disc_outputs):
         loss += l
 
     return loss, gen_losses
+
+def contrastive_loss(g_in, sid, all_g):
+    g_in = g_in.float()
+    all_g = all_g.float()
+    g_in_normed = g_in / torch.clamp(torch.norm(g_in, p=2, dim=1, keepdim=True), min=1e-7)
+    all_g_normed = all_g / torch.clamp(torch.norm(all_g, p=2, dim=1, keepdim=True), min=1e-7)
+    weight = np.sqrt(2.) * np.sqrt(all_g.shape[1])
+    score = weight * torch.einsum("bd,nd->bn", g_in_normed, all_g_normed)
+    ix = torch.arange(g_in.shape[0])
+    score_pos = score[ix, sid]
+    score_neg = torch.exp(torch.where(sid.unsqueeze(1) != torch.arange(all_g.shape[0]).unsqueeze(0).to(sid.device), score, -1e5)).sum(dim=1)
+    loss = (-score_pos + torch.log(torch.clamp(score_neg, min=1e-7))).mean()
+    return loss

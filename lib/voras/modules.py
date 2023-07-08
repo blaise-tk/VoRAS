@@ -15,40 +15,6 @@ from .transforms import piecewise_rational_quadratic_transform
 
 LRELU_SLOPE = 0.1
 
-class HarmonicEmbedder(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, gin_channels, num_head, num_harmonic=0, f0_min=50., f0_max=1100., device="cuda"):
-        super(HarmonicEmbedder, self).__init__()
-        self.embedding_dim = embedding_dim
-        self.num_head = num_head
-        self.num_harmonic = num_harmonic
-
-        f0_mel_min = np.log(1 + f0_min / 700)
-        f0_mel_max = np.log(1 + f0_max * (1 + num_harmonic) / 700)
-        self.sequence = torch.from_numpy(np.linspace(f0_mel_min, f0_mel_max, num_embeddings-2))
-        self.emb_layer = torch.nn.Embedding(num_embeddings, embedding_dim)
-        self.linear_q = Conv1d(gin_channels, num_head * (1 + num_harmonic), 1)
-        self.weight = None
-
-    def forward(self, x, g):
-        b, l = x.size()
-        non_zero = (x != 0.).to(dtype=torch.long).unsqueeze(1)
-        mel = torch.log(1 + x / 700).unsqueeze(1)
-        harmonies = torch.arange(1 + self.num_harmonic, device=x.device, dtype=x.dtype).view(1, 1 + self.num_harmonic, 1) + 1.
-        ix = torch.searchsorted(self.sequence.to(x.device), mel * harmonies).to(x.device) + 1
-        ix = ix * non_zero
-        emb = self.emb_layer(ix).transpose(1, 3).reshape(b, self.num_head, self.embedding_dim // self.num_head, 1 + self.num_harmonic, l)
-        if self.weight is None:
-            weight = torch.nn.functional.softmax(self.linear_q(g).reshape(b, self.num_head, 1, 1 + self.num_harmonic, 1), 3)
-        else:
-            weight = self.weight
-        res = torch.sum(emb * weight, dim=3).reshape(b, self.embedding_dim, l)
-        return res
-
-    def fix_speaker(self, g):
-        self.weight = torch.nn.functional.softmax(self.linear_q(g).reshape(1, self.num_head, 1, 1 + self.num_harmonic, 1), 3)
-
-    def unfix_speaker(self, g):
-        self.weight = None
 
 class LayerNorm(nn.Module):
     def __init__(self, channels, eps=1e-5):
@@ -108,46 +74,51 @@ class CausalConvTranspose1d(nn.Module):
 
 
 class LoRALinear1d(nn.Module):
-    def __init__(self, in_channels, out_channels, info_channels, r):
+    def __init__(self, in_channels, out_channels, info_channels, r_in, r_out):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.info_channels = info_channels
-        self.r = r
         self.main_fc = weight_norm(nn.Conv1d(in_channels, out_channels, 1))
-        self.adapter_in = nn.Conv1d(info_channels, in_channels * r, 1)
-        self.adapter_out = nn.Conv1d(info_channels, out_channels * r, 1)
-        nn.init.normal_(self.adapter_in.weight.data, 0, 0.01)
-        nn.init.constant_(self.adapter_out.weight.data, 1e-6)
-        self.adapter_in = weight_norm(self.adapter_in)
-        self.adapter_out = weight_norm(self.adapter_out)
-        self.speaker_fixed = False
+        self.rs = [r_in, r_out]
+        self.adapter_in = torch.nn.ModuleList([nn.Conv1d(info_channels, in_channels * r, 1, bias=False) for r in self.rs])
+        self.adapter_out = torch.nn.ModuleList([nn.Conv1d(info_channels, out_channels * r, 1, bias=False) for r in self.rs])
+        for i in range(len(self.rs)):
+            nn.init.normal_(self.adapter_in[i].weight.data, 0, 0.01)
+            self.adapter_in[i] = weight_norm(self.adapter_in[i])
+            nn.init.constant_(self.adapter_out[i].weight.data, 1e-7)
+            self.adapter_out[i] = weight_norm(self.adapter_out[i])
+        self.speaker_fixed = [False] * len(self.rs)
 
-    def forward(self, x, g):
+    def forward(self, x, g_in, g_out):
         x_ = self.main_fc(x)
-        if not self.speaker_fixed:
-            a_in = self.adapter_in(g).view(-1, self.in_channels, self.r)
-            a_out = self.adapter_out(g).view(-1, self.r, self.out_channels)
+        for i, g in enumerate([g_in, g_out]):
+            if self.speaker_fixed[i]:
+                continue
+            a_in = self.adapter_in[i](g).view(-1, self.in_channels, self.rs[i])
+            a_out = self.adapter_out[i](g).view(-1, self.rs[i], self.out_channels)
             l = torch.einsum("brl,brc->bcl", torch.einsum("bcl,bcr->brl", x, a_in), a_out)
             x_ = x_ + l
         return x_
 
     def remove_weight_norm(self):
+        for l in self.adapter_in:
+            remove_weight_norm(l)
+        for l in self.adapter_out:
+            remove_weight_norm(l)
         remove_weight_norm(self.main_fc)
-        remove_weight_norm(self.adapter_in)
-        remove_weight_norm(self.adapter_out)
 
-    def fix_speaker(self, g):
-        self.speaker_fixed = True
-        a_in = self.adapter_in(g).view(-1, self.in_channels, self.r)
-        a_out = self.adapter_out(g).view(-1, self.r, self.out_channels)
+    def fix_speaker(self, i, g):
+        self.speaker_fixed[i] = True
+        a_in = self.adapter_in[i](g).view(-1, self.in_channels, self.r)
+        a_out = self.adapter_out[i](g).view(-1, self.r, self.out_channels)
         weight = torch.einsum("bir,bro->oi", a_in, a_out).unsqueeze(2)
         self.main_fc.weight.data.add_(weight)
 
-    def unfix_speaker(self, g):
-        self.speaker_fixed = False
-        a_in = self.adapter_in(g).view(-1, self.in_channels, self.r)
-        a_out = self.adapter_out(g).view(-1, self.r, self.out_channels)
+    def unfix_speaker(self, i, g):
+        self.speaker_fixed[i] = False
+        a_in = self.adapter_in[i](g).view(-1, self.in_channels, self.r)
+        a_out = self.adapter_out[i](g).view(-1, self.r, self.out_channels)
         weight = torch.einsum("bir,bro->oi", a_in, a_out).unsqueeze(2)
         self.main_fc.weight.data.sub_(weight)
 
@@ -252,7 +223,7 @@ class ConvNext2d(torch.nn.Module):
 
 
 class WaveBlock(torch.nn.Module):
-    def __init__(self, inner_channels, gin_channels, kernel_sizes, strides, dilations, extend_rate, r):
+    def __init__(self, inner_channels, gin_channels, kernel_sizes, strides, dilations, extend_rate, r_in, r_out):
         super(WaveBlock, self).__init__()
         norm_f = weight_norm
         extend_channels = int(inner_channels * extend_rate)
@@ -266,20 +237,18 @@ class WaveBlock(torch.nn.Module):
         # self.norms = []
         for i, (k, s, d) in enumerate(zip(kernel_sizes, strides, dilations)):
             self.dconvs.append(DilatedCausalConv1d(inner_channels, inner_channels, k, stride=s, dilation=d, groups=inner_channels))
-            self.p1convs.append(LoRALinear1d(inner_channels, extend_channels, gin_channels, r))
-            self.p2convs.append(LoRALinear1d(extend_channels, inner_channels, gin_channels, r))
+            self.p1convs.append(LoRALinear1d(inner_channels, extend_channels, gin_channels, r_in, r_out))
+            self.p2convs.append(LoRALinear1d(extend_channels, inner_channels, gin_channels, r_in, r_out))
             self.norms.append(LayerNorm(inner_channels))
 
-    def forward(self, x, x_mask, g):
-        x *= x_mask
+    def forward(self, x, g_in, g_out):
         for i in range(len(self.dconvs)):
             residual = x.clone()
             x = self.dconvs[i](x)
             x = self.norms[i](x)
-            x *= x_mask
-            x = self.p1convs[i](x, g)
+            x = self.p1convs[i](x, g_in, g_out)
             x = self.act(x)
-            x = self.p2convs[i](x, g)
+            x = self.p2convs[i](x, g_in, g_out)
             x = residual + x
         return x
 
@@ -291,17 +260,17 @@ class WaveBlock(torch.nn.Module):
         for c in self.p2convs:
             c.remove_weight_norm()
 
-    def fix_speaker(self, g):
+    def fix_speaker(self, i, g):
         for c in self.p1convs:
-            c.fix_speaker(g)
+            c.fix_speaker(i, g)
         for c in self.p2convs:
-            c.fix_speaker(g)
+            c.fix_speaker(i, g)
 
-    def unfix_speaker(self, g):
+    def unfix_speaker(self, i, g):
         for c in self.p1convs:
-            c.unfix_speaker(g)
+            c.unfix_speaker(i, g)
         for c in self.p2convs:
-            c.unfix_speaker(g)
+            c.unfix_speaker(i, g)
 
 
 class SnakeFilter(torch.nn.Module):
@@ -444,8 +413,9 @@ class IMDCTSymExpHead(FourierHead):
         super().__init__()
         out_dim = mdct_frame_len
         self.dconv = DilatedCausalConv1d(dim, dim, 5, 1, dim, 1)
-        self.pconv1 = LoRALinear1d(dim, dim * 2, gin_channels, 2)
-        self.pconv2 = LoRALinear1d(dim * 2, out_dim, gin_channels, 2)
+        self.pconv1 = LoRALinear1d(dim, dim * 2, gin_channels, 4, 8)
+        self.pconv2 = LoRALinear1d(dim * 2, out_dim, gin_channels, 4, 12)
+        #self.out = LoRALinear1d(dim, out_dim, gin_channels, 2, 12)
         self.act = torch.nn.GELU()
         self.imdct = IMDCT(frame_len=mdct_frame_len, padding=padding)
 
@@ -459,7 +429,7 @@ class IMDCTSymExpHead(FourierHead):
             with torch.no_grad():
                 self.pconv2.main_fc.weight.mul_(scale.view(-1, 1, 1))
 
-    def forward(self, x: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, g_in: torch.Tensor, g_out: torch.Tensor) -> torch.Tensor:
         """
         Forward pass of the IMDCTSymExpHead module.
 
@@ -471,9 +441,11 @@ class IMDCTSymExpHead(FourierHead):
             Tensor: Reconstructed time-domain audio signal of shape (B, T), where T is the length of the output signal.
         """
         x = self.dconv(x)
-        x = self.pconv1(x, g)
+        x = self.pconv1(x, g_in, g_out)
         x = self.act(x)
-        x = self.pconv2(x, g)
+        x = self.pconv2(x, g_in, g_out)
+        #x = self.act(x)
+        #x = self.out(x, g_in, g_out)
         x = symexp(x)
         x = torch.clip(x, min=-1e2, max=1e2)  # safeguard to prevent excessively large magnitudes
         audio = self.imdct(x)

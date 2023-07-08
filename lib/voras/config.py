@@ -50,23 +50,10 @@ class TrainConfig(BaseModel):
 
 
 class DatasetMetaItem(BaseModel):
-    gt_wav: str
-    co256: str
-    f0: Optional[str]
-    f0nsf: Optional[str]
-    speaker_id: int
-
-
-class DatasetMetadata(BaseModel):
-    files: Dict[str, DatasetMetaItem]
-    # mute: DatasetMetaItem
-
-
-class RawDatasetMetaItem(BaseModel):
     raw_file: str
     speaker_id: int
 
 
-class RawDatasetMetadata(BaseModel):
+class DatasetMetadata(BaseModel):
     type: Optional[str]
-    files: List[RawDatasetMetaItem]
+    files: List[DatasetMetaItem]

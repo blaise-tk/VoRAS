@@ -107,6 +107,7 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
             cycle_mult : float = 1.,
             max_lr : float = 0.1,
             min_lr : float = 0.001,
+            first_lr: float = 0.0001,
             warmup_steps : int = 0,
             gamma : float = 1.,
             last_epoch : int = -1
@@ -118,6 +119,7 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
         self.base_max_lr = max_lr # first max learning rate
         self.max_lr = max_lr # max learning rate in the current cycle
         self.min_lr = min_lr # min learning rate
+        self.first_lr = first_lr
         self.warmup_steps = warmup_steps # warmup step size
         self.gamma = gamma # decrease rate of max learning rate by cycle
 
@@ -140,34 +142,20 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
         if self.step_in_cycle == -1:
             return self.base_lrs
         elif self.step_in_cycle < self.warmup_steps:
-            return [(self.max_lr - base_lr)*self.step_in_cycle / self.warmup_steps + base_lr for base_lr in self.base_lrs]
+            return [np.exp((np.log(self.max_lr) - np.log(self.first_lr)) * self.step_in_cycle / self.warmup_steps + np.log(self.first_lr)) for _ in self.base_lrs]
         else:
             return [base_lr + (self.max_lr - base_lr) \
                     * (1 + math.cos(math.pi * (self.step_in_cycle-self.warmup_steps) \
                                     / (self.cur_cycle_steps - self.warmup_steps))) / 2
                     for base_lr in self.base_lrs]
 
-    def step(self, epoch=None):
-        if epoch is None:
-            epoch = self.last_epoch + 1
-            self.step_in_cycle = self.step_in_cycle + 1
-            if self.step_in_cycle >= self.cur_cycle_steps:
-                self.cycle += 1
-                self.step_in_cycle = self.step_in_cycle - self.cur_cycle_steps
-                self.cur_cycle_steps = int((self.cur_cycle_steps - self.warmup_steps) * self.cycle_mult) + self.warmup_steps
-        else:
-            if epoch >= self.first_cycle_steps:
-                if self.cycle_mult == 1.:
-                    self.step_in_cycle = epoch % self.first_cycle_steps
-                    self.cycle = epoch // self.first_cycle_steps
-                else:
-                    n = int(math.log((epoch / self.first_cycle_steps * (self.cycle_mult - 1) + 1), self.cycle_mult))
-                    self.cycle = n
-                    self.step_in_cycle = epoch - int(self.first_cycle_steps * (self.cycle_mult ** n - 1) / (self.cycle_mult - 1))
-                    self.cur_cycle_steps = self.first_cycle_steps * self.cycle_mult ** (n)
-            else:
-                self.cur_cycle_steps = self.first_cycle_steps
-                self.step_in_cycle = epoch
+    def step(self):
+        epoch = self.last_epoch + 1
+        self.step_in_cycle = self.step_in_cycle + 1
+        if self.step_in_cycle >= self.cur_cycle_steps:
+            self.cycle += 1
+            self.step_in_cycle = self.step_in_cycle - self.cur_cycle_steps
+            self.cur_cycle_steps = int((self.cur_cycle_steps - self.warmup_steps) * self.cycle_mult) + self.warmup_steps
 
         self.max_lr = self.base_max_lr * (self.gamma**self.cycle)
         self.last_epoch = math.floor(epoch)
