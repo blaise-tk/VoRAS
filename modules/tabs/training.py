@@ -57,6 +57,7 @@ class Training(Tab):
             f0 = f0 == "Yes"
             out_dir = os.path.join(MODELS_DIR, "checkpoints")
             training_dir = os.path.join(MODELS_DIR, "training", "models", model_name)
+            mute_path = os.path.join(MODELS_DIR, "training", "mute", "0_gt_wavs", "mute24k.wav")
             gpu_ids = [int(x.strip()) for x in gpu_id.split(",")] if gpu_id else []
 
             if os.path.exists(training_dir) and ignore_cache:
@@ -72,7 +73,8 @@ class Training(Tab):
                                 multiple_speakers=multiple_speakers,
                                 recursive=recursive,
                                 training_dir=training_dir,
-                                segment_size=config.data.segment_size
+                                segment_size=config.data.segment_size,
+                                mute_path=mute_path
                                 )
 
             yield "Training model..."

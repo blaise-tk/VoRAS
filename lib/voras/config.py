@@ -15,8 +15,9 @@ class TrainConfigTrain(BaseModel):
     lr_decay: float
     init_lr_ratio: int
     warmup_epochs: int
+    augment_start_steps: int
     c_mel: int
-    c_kl: float
+    c_spk: float
 
 
 class TrainConfigData(BaseModel):

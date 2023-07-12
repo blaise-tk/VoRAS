@@ -81,6 +81,7 @@ class SpeakerEmbedder(torch.nn.Module):
     def __init__(self, gin_channels):
         super(SpeakerEmbedder, self).__init__()
         self.melspec = torchaudio.transforms.MelSpectrogram(
+            n_mels=128,
             sample_rate=16000,
             n_fft=960,
             win_length=960,
@@ -98,7 +99,8 @@ class SpeakerEmbedder(torch.nn.Module):
         self.pwconvs2 = nn.ModuleList()
         self.norms = nn.ModuleList()
         self.act = nn.GELU()
-        inner_channels = gin_channels // 4
+        inner_channels = gin_channels
+        self.inner_channels = inner_channels
         self.init_conv = weight_norm(Conv2d(1, inner_channels, (7, 7), stride=(2, 2), padding=(3, 3)))
         for i in range(4):
             if i == 3:
@@ -109,7 +111,7 @@ class SpeakerEmbedder(torch.nn.Module):
             self.norms.append(LayerNorm(inner_channels))
             self.pwconvs1.append(weight_norm(Conv2d(inner_channels, inner_channels * 4, (1, 1))))
             self.pwconvs2.append(weight_norm(Conv2d(inner_channels * 4, inner_channels, (1, 1))))
-        self.post = nn.Linear(inner_channels, gin_channels)
+        self.post = nn.Linear(inner_channels * 4, gin_channels)
         self.eps = 1e-7
         # self.weight = np.sqrt(2.) * np.log(self.spk_embed_dim + 1.)
 
@@ -122,7 +124,7 @@ class SpeakerEmbedder(torch.nn.Module):
             y = self.pwconvs1[i](y)
             y = self.act(y)
             y = self.pwconvs2[i](y)
-        y = y.mean(dim=[2, 3])
+        y = torch.reshape(y.mean(dim=[3]), [y.shape[0], self.inner_channels * 4])
         y = self.post(y)
         y = y / torch.clamp(torch.norm(y, p=2, dim=1, keepdim=True), min=1e-7)
         return y

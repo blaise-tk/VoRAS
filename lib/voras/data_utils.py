@@ -69,7 +69,7 @@ class AudioLabelLoader(torch.utils.data.Dataset):
 
         audio_normed = (audio_normed / torch.clamp(audio_normed.abs().max(), min=1e-7) * (.95 * .8)) + 0.2 * audio_normed
         audio_trimed = torch.zeros([1, self.segment_size])
-        start =max(0, randint(-self.pre_silence, max(0, audio_normed.shape[1] - self.segment_size)))
+        start =max(0, randint(-self.pre_silence, max(0, audio_normed.shape[1] - self.segment_size))) // (self.sampling_rate//100) * (self.sampling_rate//100)
         audio_normed = audio_normed[:, start:start+self.segment_size]
         audio_trimed[:, -audio_normed.shape[1]:] = audio_normed
         return audio_trimed

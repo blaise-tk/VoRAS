@@ -90,7 +90,7 @@ def contrastive_loss(g_in, sid, all_g):
     all_g = all_g.float()
     g_in_normed = g_in / torch.clamp(torch.norm(g_in, p=2, dim=1, keepdim=True), min=1e-7)
     all_g_normed = all_g / torch.clamp(torch.norm(all_g, p=2, dim=1, keepdim=True), min=1e-7)
-    weight = np.sqrt(2.) * np.sqrt(all_g.shape[1])
+    weight = np.sqrt(2.) * np.log(all_g_normed.shape[0] - 1)
     score = weight * torch.einsum("bd,nd->bn", g_in_normed, all_g_normed)
     ix = torch.arange(g_in.shape[0])
     score_pos = score[ix, sid]
