@@ -11,7 +11,7 @@ VoRAS is based on RVC, replacing the vocoder with Vocos and rewriting the overal
 <br >
 
 ## Note
-VoRAS is currently in beta version and will be ported to latopia in the future. In the future, the structure of the model will change and compatibility will be lost, and until the official version, it is assumed that only the RTX series or higher GPU will be used for learning in a local Windows environment. Please understand.
+VoRAS has stopped development. This is because no further improvement in performance is expected. If you want to try it on top of that, please fork this library.
 
 
 # Launch
@@ -46,3 +46,7 @@ Run the installer and select `C++ Build Tools` in the `Workloads` tab.
 - [`NVIDIA/BigVGAN`](https://github.com/NVIDIA/BigVGAN)
 - [`/rinna/japanese-hubert-base`](https://huggingface.co/rinna/japanese-hubert-base)
 - [`teftef6220/Voice_Separation_and_Selection`](https://github.com/teftef6220/Voice_Separation_and_Selection)
+- [あみたろの声素材工房](https://amitaro.net/)
+- [つくよみちゃん](https://tyc.rei-yumesaki.net/)
+- [刻鳴時雨ITAコーパス読み上げ音声素材](https://booth.pm/ja/items/3640133)
+- [れぷりかどーる](https://kikyohiroto1227.wixsite.com/kikoto-utau)
