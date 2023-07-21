@@ -149,7 +149,7 @@ def change_speaker(net_g, embedder, embedding_output_layer, phone, wave_16k):
     new_sid = np.random.randint(net_g.spk_embed_dim, size=N)
     new_sid = torch.from_numpy(new_sid).to(device)
 
-    new_wave = net_g.infer(phone, wave_16k, new_sid)[0]
+    new_wave = net_g.infer(phone, new_sid)[0]
     new_wave_16k = torchaudio.functional.resample(new_wave, net_g.sr, 16000, rolloff=0.99)
     padding_mask = torch.zeros_like(new_wave_16k, dtype=torch.bool).to(device)
 
@@ -399,9 +399,9 @@ def training_runner(
                 original_weight = net_g_state["emb_g.weight"]
                 net_g_state["emb_g.weight"] = original_weight.mean(dim=0, keepdims=True) * torch.ones(emb_spk_size, device=original_weight.device, dtype=original_weight.dtype)
             if is_multi_process:
-                net_g.module.load_state_dict(net_g_state)
+                net_g.module.load_state_dict(net_g_state, strict=False)
             else:
-                net_g.load_state_dict(net_g_state)
+                net_g.load_state_dict(net_g_state, strict=False)
             del net_g_state
 
             if is_multi_process:
@@ -456,10 +456,10 @@ def training_runner(
 
     if finetuning:
         scheduler_g = torch.optim.lr_scheduler.ExponentialLR(
-            optim_g, gamma=config.train.lr_decay, last_epoch=epoch - 2
+            optim_g, gamma=config.train.lr_decay, last_epoch=-1
         )
         scheduler_d = torch.optim.lr_scheduler.ExponentialLR(
-            optim_d, gamma=config.train.lr_decay, last_epoch=epoch - 2
+            optim_d, gamma=config.train.lr_decay, last_epoch=-1
         )
     else:
         scheduler_g = CosineAnnealingWarmupRestarts(
@@ -484,6 +484,11 @@ def training_runner(
             gamma=.9,
             last_epoch=-1
         )
+
+    for _ in range(epoch-1):
+        for _ in range(len(train_loader)):
+            scheduler_d.step()
+            scheduler_g.step()
 
     scaler = GradScaler(enabled=config.train.fp16_run)
 
@@ -537,6 +542,21 @@ def training_runner(
                     loss_spk=float(loss_spk) if loss_spk is not None else 0.0,
                     )
             del optim_s
+    elif epoch == 1 and finetuning:
+        new_weight = torch.zeros_like(net_g.emb_g.weight.data)
+        new_norm = torch.norm(net_g.emb_g.weight.data, p=2, dim=1, keepdim=True).mean(dim=0, keepdim=True)
+        with tqdm.tqdm(total=len(train_loader)) as pbar:
+            for batch in train_loader:
+                (
+                    wave,
+                    sid,
+                ) = batch
+                sid = sid.to(device=device, non_blocking=True)
+                wave = wave.to(device=device, non_blocking=True)
+                wave_16k = torchaudio.functional.resample(wave, net_g.sr, 16000, rolloff=0.99)
+                g_pred = net_g.speaker_embedder(wave_16k)
+                new_weight.scatter_add_(0, sid.view(-1, 1).expand([-1, new_weight.shape[1]]), g_pred)
+        net_g.emb_g.weight.data = new_norm * new_weight / torch.clamp(torch.norm(new_weight, p=2, dim=1, keepdim=True), min=1e-7)
 
     for epoch in range(epoch, total_epoch + 1):
 
@@ -575,8 +595,9 @@ def training_runner(
                     if augment and (finetuning or (step > config.train.augment_start_steps)):
                         new_phone, new_wave, new_wave_16k, new_sid = change_speaker(augment_net_g, embedder, embedding_output_layer, phone, wave_16k)
                         if augment_path is not None:
-                            # TODO: 確率的に元の音声を使う
-                            new_sid = torch.where(torch.rand(sid.size) < 1 / augment_net_g.spk_embed_dim, sid, new_sid * 0 - 1)
+                            new_sid = torch.where(torch.rand(sid.shape).to(phone.device) < 1 / augment_net_g.spk_embed_dim, sid, new_sid * 0 - 1)
+                        stay_prob = 0.01 * np.power(.8, (step - config.train.augment_start_steps) / len(train_loader))
+                        new_sid = torch.where(torch.rand(sid.shape).to(phone.device) < stay_prob, sid, new_sid * 0 - 1)
                         weight = 1 - np.power(.1, (step - config.train.augment_start_steps) / len(train_loader)) # 学習の初期はそのままのphone embeddingを使う
                     else:
                         new_phone, new_wave, new_wave_16k, new_sid = phone.detach(), wave.detach(), wave_16k.detach(), sid.detach()
@@ -590,6 +611,7 @@ def training_runner(
                     if wave_16k_delta:
                         wave_16k = wave_16k[:, :, wave_16k_delta:-wave_16k_delta]
                     new_wave_16k = torch.where(torch.reshape(sid == new_sid, (-1, 1, 1)), wave_16k,  wave_16k * (1. - weight) + new_wave_16k * weight)
+                    new_wave_16k = (new_wave_16k / torch.clamp(torch.max(torch.abs(new_wave_16k), dim=2, keepdims=True)[0], min=1e-7) * (.95 * .8)) + 0.2 * new_wave_16k
 
                     wave_delta = (wave.shape[2] - phone.shape[1] * config.data.hop_length)//2
                     if wave_delta:
@@ -601,7 +623,7 @@ def training_runner(
                     g_in,
                     g_out
                 ) = net_g(
-                    phone, new_wave_16k, sid
+                    phone, sid
                 )
                 y_hat, wave = y_hat[:, :, :wave.shape[2]], wave[:, :, :y_hat.shape[2]]
 

@@ -192,7 +192,7 @@ class Training(Tab):
                         augment_path = gr.Textbox(
                             label="Pre trained checkpoint path (pth)",
                             value=os.path.join(
-                                MODELS_DIR, "pretrained", "beta", "voras_pretrained_augmenter.pt"
+                                MODELS_DIR, "pretrained", "beta", "voras_pretrain_libritts_r.pth"
                             ),
                         )
                     with gr.Row().style(equal_height=False):
@@ -200,13 +200,13 @@ class Training(Tab):
                         pre_trained_generator = gr.Textbox(
                             label="Pre trained generator path",
                             value=os.path.join(
-                                MODELS_DIR, "pretrained", "beta", "f0G24k.pth"
+                                MODELS_DIR, "pretrained", "beta", "G24k.pth"
                             ),
                         )
                         pre_trained_discriminator = gr.Textbox(
                             label="Pre trained discriminator path",
                             value=os.path.join(
-                                MODELS_DIR, "pretrained", "beta", "f0D24k.pth"
+                                MODELS_DIR, "pretrained", "beta", "D24k.pth"
                             ),
                         )
                     with gr.Row().style(equal_height=False):

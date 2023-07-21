@@ -12,7 +12,7 @@ from torch.nn.utils import remove_weight_norm, spectral_norm, weight_norm
 
 from . import commons, modules
 from .commons import get_padding
-from .modules import (ConvNext2d, IMDCTSymExpHead, LayerNorm, LoRALinear1d,
+from .modules import (ConvNext2d, ISTFTHead, LayerNorm, LoRALinear1d,
                       SnakeFilter, WaveBlock)
 
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,34 +33,33 @@ class GeneratorVoras(torch.nn.Module):
         inter_channels,
         gin_channels,
         n_layers,
-        sr,
+        n_fft,
         hop_length,
     ):
         super(GeneratorVoras, self).__init__()
         self.n_layers = n_layers
-        self.g_in_linear = weight_norm(nn.Conv1d(gin_channels, inter_channels, 1))
         self.g_out_linear = weight_norm(nn.Conv1d(gin_channels, inter_channels, 1))
         self.resblocks = nn.ModuleList()
-        self.init_linear = LoRALinear1d(emb_channels, inter_channels, gin_channels, r_in=4, r_out=4)
+        self.init_linear = LoRALinear1d(emb_channels, inter_channels, gin_channels, r_out=12)
         for _ in range(self.n_layers):
-            self.resblocks.append(WaveBlock(inter_channels, gin_channels, [9] * 2, [1] * 2, [1, 9], 2, r_in=4, r_out=8))
-        self.head = IMDCTSymExpHead(inter_channels, gin_channels, hop_length, padding="center", sample_rate=sr)
+            self.resblocks.append(WaveBlock(inter_channels, gin_channels, [5] * 3, [1] * 3, [1, 2, 4], 3, r_out=12))
+        self.head = ISTFTHead(inter_channels, gin_channels, n_fft, hop_length, padding="center")
+        #self.head = IMDCTSymExpHead(inter_channels, gin_channels, hop_length, padding="center", sample_rate=sr)
         self.post = SnakeFilter(4, 8, 9, 2, eps=1e-5)
 
-    def forward(self, x, g_in, g_out):
-        x = self.init_linear(x, g_in, g_out) + self.g_in_linear(g_in) + self.g_out_linear(g_out)
+    def forward(self, x, g_out):
+        x = self.init_linear(x, g_out) + self.g_out_linear(g_out)
         for i in range(self.n_layers):
-            x = self.resblocks[i](x, g_in, g_out)
-        x = self.head(x, g_in, g_out)
+            x = self.resblocks[i](x, g_out)
+        x = self.head(x, g_out)
         x = self.post(x)
         return torch.tanh(x)
 
     def remove_weight_norm(self):
-        remove_weight_norm(self.g_in_linear)
+        self.init_linear.remove_weight_norm()
         remove_weight_norm(self.g_out_linear)
         for l in self.resblocks:
             l.remove_weight_norm()
-        self.init_linear.remove_weight_norm()
         self.head.remove_weight_norm()
         self.post.remove_weight_norm()
 
@@ -162,10 +161,10 @@ class Synthesizer(nn.Module):
             inter_channels,
             gin_channels,
             n_layers,
-            sr,
+            n_fft,
             hop_length
         )
-        self.speaker_embedder = SpeakerEmbedder(gin_channels, )
+        self.speaker_embedder = SpeakerEmbedder(gin_channels)
         self.emb_g = nn.Embedding(self.spk_embed_dim, gin_channels)
         print(
             "gin_channels:",
@@ -190,21 +189,17 @@ class Synthesizer(nn.Module):
         self.speaker[target] = sid
 
     def forward(
-        self, phone, y_16k, ds
+        self, phone, ds
         ):
-        g_in = self.speaker_embedder(y_16k).unsqueeze(-1).detach()
         g_out = self.emb_g(ds).unsqueeze(-1)
         x = torch.transpose(phone, 1, -1)
-        o = self.dec(x, g_in, g_out)
-        return o, g_in, g_out
+        o = self.dec(x, g_out)
+        return o, None, g_out
 
-    def infer(self, phone, y_16k, sid, g_in=None, g_out=None):
-        if g_in is None:
-            g_in = self.speaker_embedder(y_16k).unsqueeze(-1)
-        if g_out is None:
-            g_out = self.emb_g(sid).unsqueeze(-1)
+    def infer(self, phone, sid):
+        g_out = self.emb_g(sid).unsqueeze(-1)
         x = torch.transpose(phone, 1, -1)
-        o = self.dec(x, g_in, g_out)
+        o = self.dec(x, g_out)
         return o, None, (None, None, None, None)
 
 

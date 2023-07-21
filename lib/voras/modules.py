@@ -74,13 +74,13 @@ class CausalConvTranspose1d(nn.Module):
 
 
 class LoRALinear1d(nn.Module):
-    def __init__(self, in_channels, out_channels, info_channels, r_in, r_out):
+    def __init__(self, in_channels, out_channels, info_channels, r_out):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.info_channels = info_channels
         self.main_fc = weight_norm(nn.Conv1d(in_channels, out_channels, 1))
-        self.rs = [r_in, r_out]
+        self.rs = [r_out]
         self.adapter_in = torch.nn.ModuleList([nn.Conv1d(info_channels, in_channels * r, 1, bias=False) for r in self.rs])
         self.adapter_out = torch.nn.ModuleList([nn.Conv1d(info_channels, out_channels * r, 1, bias=False) for r in self.rs])
         for i in range(len(self.rs)):
@@ -90,9 +90,9 @@ class LoRALinear1d(nn.Module):
             self.adapter_out[i] = weight_norm(self.adapter_out[i])
         self.speaker_fixed = [False] * len(self.rs)
 
-    def forward(self, x, g_in, g_out):
+    def forward(self, x, g_out):
         x_ = self.main_fc(x)
-        for i, g in enumerate([g_in, g_out]):
+        for i, g in enumerate([g_out]):
             if self.speaker_fixed[i]:
                 continue
             a_in = self.adapter_in[i](g).view(-1, self.in_channels, self.rs[i])
@@ -223,7 +223,7 @@ class ConvNext2d(torch.nn.Module):
 
 
 class WaveBlock(torch.nn.Module):
-    def __init__(self, inner_channels, gin_channels, kernel_sizes, strides, dilations, extend_rate, r_in, r_out):
+    def __init__(self, inner_channels, gin_channels, kernel_sizes, strides, dilations, extend_rate, r_out):
         super(WaveBlock, self).__init__()
         norm_f = weight_norm
         extend_channels = int(inner_channels * extend_rate)
@@ -237,18 +237,18 @@ class WaveBlock(torch.nn.Module):
         # self.norms = []
         for i, (k, s, d) in enumerate(zip(kernel_sizes, strides, dilations)):
             self.dconvs.append(DilatedCausalConv1d(inner_channels, inner_channels, k, stride=s, dilation=d, groups=inner_channels))
-            self.p1convs.append(LoRALinear1d(inner_channels, extend_channels, gin_channels, r_in, r_out))
-            self.p2convs.append(LoRALinear1d(extend_channels, inner_channels, gin_channels, r_in, r_out))
+            self.p1convs.append(LoRALinear1d(inner_channels, extend_channels, gin_channels, r_out))
+            self.p2convs.append(LoRALinear1d(extend_channels, inner_channels, gin_channels, r_out))
             self.norms.append(LayerNorm(inner_channels))
 
-    def forward(self, x, g_in, g_out):
+    def forward(self, x, g_out):
         for i in range(len(self.dconvs)):
             residual = x.clone()
             x = self.dconvs[i](x)
             x = self.norms[i](x)
-            x = self.p1convs[i](x, g_in, g_out)
+            x = self.p1convs[i](x, g_out)
             x = self.act(x)
-            x = self.p2convs[i](x, g_in, g_out)
+            x = self.p2convs[i](x, g_out)
             x = residual + x
         return x
 
@@ -394,6 +394,77 @@ class IMDCT(nn.Module):
         return audio.unsqueeze(1)
 
 
+class ISTFT(nn.Module):
+    """
+    Custom implementation of ISTFT since torch.istft doesn't allow custom padding (other than `center=True`) with
+    windowing. This is because the NOLA (Nonzero Overlap Add) check fails at the edges.
+    See issue: https://github.com/pytorch/pytorch/issues/62323
+    Specifically, in the context of neural vocoding we are interested in "same" padding analogous to CNNs.
+    The NOLA constraint is met as we trim padded samples anyway.
+
+    Args:
+        n_fft (int): Size of Fourier transform.
+        hop_length (int): The distance between neighboring sliding window frames.
+        win_length (int): The size of window frame and STFT filter.
+        padding (str, optional): Type of padding. Options are "center" or "same". Defaults to "same".
+    """
+
+    def __init__(self, n_fft: int, hop_length: int, win_length: int, padding: str = "same"):
+        super().__init__()
+        if padding not in ["center", "same"]:
+            raise ValueError("Padding must be 'center' or 'same'.")
+        self.padding = padding
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.win_length = win_length
+        window = torch.hann_window(win_length)
+        self.register_buffer("window", window)
+
+    def forward(self, spec: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the Inverse Short Time Fourier Transform (ISTFT) of a complex spectrogram.
+
+        Args:
+            spec (Tensor): Input complex spectrogram of shape (B, N, T), where B is the batch size,
+                            N is the number of frequency bins, and T is the number of time frames.
+
+        Returns:
+            Tensor: Reconstructed time-domain signal of shape (B, L), where L is the length of the output signal.
+        """
+        if self.padding == "center":
+            # Fallback to pytorch native implementation
+            return torch.istft(spec, self.n_fft, self.hop_length, self.win_length, self.window, center=True)
+        elif self.padding == "same":
+            pad = (self.win_length - self.hop_length) // 2
+        else:
+            raise ValueError("Padding must be 'center' or 'same'.")
+
+        assert spec.dim() == 3, "Expected a 3D tensor as input"
+        B, N, T = spec.shape
+
+        # Inverse FFT
+        ifft = torch.fft.irfft(spec, self.n_fft, dim=1, norm="backward")
+        ifft = ifft * self.window[None, :, None]
+
+        # Overlap and Add
+        output_size = (T - 1) * self.hop_length + self.win_length
+        y = torch.nn.functional.fold(
+            ifft, output_size=(1, output_size), kernel_size=(1, self.win_length), stride=(1, self.hop_length),
+        )[:, 0, 0, pad:-pad]
+
+        # Window envelope
+        window_sq = self.window.square().expand(1, T, -1).transpose(1, 2)
+        window_envelope = torch.nn.functional.fold(
+            window_sq, output_size=(1, output_size), kernel_size=(1, self.win_length), stride=(1, self.hop_length),
+        ).squeeze()[pad:-pad]
+
+        # Normalize
+        assert (window_envelope > 1e-11).all()
+        y = y / window_envelope
+
+        return y
+
+
 class IMDCTSymExpHead(FourierHead):
     """
     IMDCT Head module for predicting MDCT coefficients with symmetric exponential function
@@ -463,6 +534,77 @@ class IMDCTSymExpHead(FourierHead):
     def unfix_speaker(self, i, g):
         self.pconv1.unfix_speaker(i, g)
         self.pconv2.unfix_speaker(i, g)
+
+
+class ISTFTHead(FourierHead):
+    """
+    ISTFT Head module for predicting STFT complex coefficients.
+
+    Args:
+        dim (int): Hidden dimension of the model.
+        n_fft (int): Size of Fourier transform.
+        hop_length (int): The distance between neighboring sliding window frames, which should align with
+                          the resolution of the input features.
+        padding (str, optional): Type of padding. Options are "center" or "same". Defaults to "same".
+    """
+
+    def __init__(self, dim: int, gin_channels: int, n_fft: int, hop_length: int, padding: str = "same"):
+        super().__init__()
+        out_dim = n_fft + 2
+        self.dconv = DilatedCausalConv1d(dim, dim, 5, 1, dim, 1)
+        self.pconv1 = LoRALinear1d(dim, dim * 3, gin_channels, 12)
+        self.pconv2 = LoRALinear1d(dim * 3, dim, gin_channels, 12)
+        self.out = LoRALinear1d(dim, out_dim, gin_channels, 16)
+        self.act = torch.nn.GELU()
+        self.istft = ISTFT(n_fft=n_fft, hop_length=hop_length, win_length=n_fft, padding=padding)
+
+    def forward(self, x: torch.Tensor, g_out: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the ISTFTHead module.
+
+        Args:
+            x (Tensor): Input tensor of shape (B, L, H), where B is the batch size,
+                        L is the sequence length, and H denotes the model dimension.
+
+        Returns:
+            Tensor: Reconstructed time-domain audio signal of shape (B, T), where T is the length of the output signal.
+        """
+        x = self.dconv(x)
+        x = self.pconv1(x, g_out)
+        x = self.act(x)
+        x = self.pconv2(x, g_out)
+        x = self.act(x)
+        x = self.out(x, g_out)
+        mag, p = x.chunk(2, dim=1)
+        mag = torch.exp(mag)
+        mag = torch.clip(mag, max=1e2)  # safeguard to prevent excessively large magnitudes
+        # wrapping happens here. These two lines produce real and imaginary value
+        x = torch.cos(p)
+        y = torch.sin(p)
+        # recalculating phase here does not produce anything new
+        # only costs time
+        # phase = torch.atan2(y, x)
+        # S = mag * torch.exp(phase * 1j)
+        # better directly produce the complex value
+        S = mag * (x + 1j * y)
+        audio = self.istft(S)
+        return audio.unsqueeze(1)
+
+    def remove_weight_norm(self):
+        self.dconv.remove_weight_norm()
+        self.pconv1.remove_weight_norm()
+        self.pconv2.remove_weight_norm()
+        self.out.remove_weight_norm()
+
+    def fix_speaker(self, i, g):
+        self.pconv1.fix_speaker(i, g)
+        self.pconv2.fix_speaker(i, g)
+        self.out.fix_speaker(i, g)
+
+    def unfix_speaker(self, i, g):
+        self.pconv1.fix_speaker(i, g)
+        self.pconv2.fix_speaker(i, g)
+        self.out.unfix_speaker(i, g)
 
 def symexp(x: torch.Tensor) -> torch.Tensor:
     return torch.sign(x) * (torch.exp(x.abs()) - 1)

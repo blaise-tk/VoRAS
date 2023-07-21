@@ -117,6 +117,7 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
         self.first_cycle_steps = first_cycle_steps # first cycle step size
         self.cycle_mult = cycle_mult # cycle steps magnification
         self.base_max_lr = max_lr # first max learning rate
+        self.base_min_lr = min_lr
         self.max_lr = max_lr # max learning rate in the current cycle
         self.min_lr = min_lr # min learning rate
         self.first_lr = first_lr
@@ -144,9 +145,9 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
         elif self.step_in_cycle < self.warmup_steps:
             return [np.exp((np.log(self.max_lr) - np.log(self.first_lr)) * self.step_in_cycle / self.warmup_steps + np.log(self.first_lr)) for _ in self.base_lrs]
         else:
-            return [base_lr + (self.max_lr - base_lr) \
-                    * (1 + math.cos(2 * math.pi * (self.step_in_cycle - self.warmup_steps) / self.cur_cycle_steps))
-                    for base_lr in self.base_lrs]
+            return [self.min_lr + (self.max_lr - self.min_lr) \
+                    * (1 + math.cos(2 * math.pi * (self.step_in_cycle - self.warmup_steps) / self.cur_cycle_steps)) / 2
+                    for _ in self.base_lrs]
 
     def step(self):
         epoch = self.last_epoch + 1
@@ -154,6 +155,7 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
         self.cycle = max(0, (self.step_in_cycle - self.warmup_steps) / self.cur_cycle_steps)
 
         self.max_lr = self.base_max_lr * (self.gamma**self.cycle)
+        self.min_lr = self.base_min_lr * (self.gamma**self.cycle)
         self.last_epoch = math.floor(epoch)
         for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
             param_group['lr'] = lr

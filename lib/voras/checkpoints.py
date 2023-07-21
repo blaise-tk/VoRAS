@@ -26,9 +26,7 @@ def create_trained_model(
     state_dict = OrderedDict()
     state_dict["weight"] = {}
     for key in weights.keys():
-        if "enc_q" in key:
-            continue
-        state_dict["weight"][key] = weights[key].half()
+        state_dict["weight"][key] = weights[key]
     write_config(
         state_dict,
         {
@@ -53,7 +51,7 @@ def create_trained_model(
     state_dict["version"] = "voras_beta"
     state_dict["info"] = f"{epoch}epoch"
     state_dict["sr"] = sr
-    state_dict["f0"] = 1 if f0 else 0
+    state_dict["f0"] = 0
     state_dict["embedder_name"] = emb_name
     state_dict["embedder_output_layer"] = emb_output_layer
     if not speaker_info is None:
