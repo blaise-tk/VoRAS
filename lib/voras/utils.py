@@ -107,6 +107,7 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
             cycle_mult : float = 1.,
             max_lr : float = 0.1,
             min_lr : float = 0.001,
+            first_lr: float = 0.0001,
             warmup_steps : int = 0,
             gamma : float = 1.,
             last_epoch : int = -1
@@ -116,14 +117,16 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
         self.first_cycle_steps = first_cycle_steps # first cycle step size
         self.cycle_mult = cycle_mult # cycle steps magnification
         self.base_max_lr = max_lr # first max learning rate
+        self.base_min_lr = min_lr
         self.max_lr = max_lr # max learning rate in the current cycle
         self.min_lr = min_lr # min learning rate
+        self.first_lr = first_lr
         self.warmup_steps = warmup_steps # warmup step size
         self.gamma = gamma # decrease rate of max learning rate by cycle
 
         self.cur_cycle_steps = first_cycle_steps # first cycle step size
         self.cycle = 0 # cycle count
-        self.step_in_cycle = last_epoch # step size of the current cycle
+        self.step_in_cycle = -1 # step size of the current cycle
 
         super(CosineAnnealingWarmupRestarts, self).__init__(optimizer, last_epoch)
 
@@ -140,36 +143,19 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
         if self.step_in_cycle == -1:
             return self.base_lrs
         elif self.step_in_cycle < self.warmup_steps:
-            return [(self.max_lr - base_lr)*self.step_in_cycle / self.warmup_steps + base_lr for base_lr in self.base_lrs]
+            return [np.exp((np.log(self.max_lr) - np.log(self.first_lr)) * self.step_in_cycle / self.warmup_steps + np.log(self.first_lr)) for _ in self.base_lrs]
         else:
-            return [base_lr + (self.max_lr - base_lr) \
-                    * (1 + math.cos(math.pi * (self.step_in_cycle-self.warmup_steps) \
-                                    / (self.cur_cycle_steps - self.warmup_steps))) / 2
-                    for base_lr in self.base_lrs]
+            return [self.min_lr + (self.max_lr - self.min_lr) \
+                    * (1 + math.cos(2 * math.pi * (self.step_in_cycle - self.warmup_steps) / self.cur_cycle_steps)) / 2
+                    for _ in self.base_lrs]
 
-    def step(self, epoch=None):
-        if epoch is None:
-            epoch = self.last_epoch + 1
-            self.step_in_cycle = self.step_in_cycle + 1
-            if self.step_in_cycle >= self.cur_cycle_steps:
-                self.cycle += 1
-                self.step_in_cycle = self.step_in_cycle - self.cur_cycle_steps
-                self.cur_cycle_steps = int((self.cur_cycle_steps - self.warmup_steps) * self.cycle_mult) + self.warmup_steps
-        else:
-            if epoch >= self.first_cycle_steps:
-                if self.cycle_mult == 1.:
-                    self.step_in_cycle = epoch % self.first_cycle_steps
-                    self.cycle = epoch // self.first_cycle_steps
-                else:
-                    n = int(math.log((epoch / self.first_cycle_steps * (self.cycle_mult - 1) + 1), self.cycle_mult))
-                    self.cycle = n
-                    self.step_in_cycle = epoch - int(self.first_cycle_steps * (self.cycle_mult ** n - 1) / (self.cycle_mult - 1))
-                    self.cur_cycle_steps = self.first_cycle_steps * self.cycle_mult ** (n)
-            else:
-                self.cur_cycle_steps = self.first_cycle_steps
-                self.step_in_cycle = epoch
+    def step(self):
+        epoch = self.last_epoch + 1
+        self.step_in_cycle = self.step_in_cycle + 1
+        self.cycle = max(0, (self.step_in_cycle - self.warmup_steps) / self.cur_cycle_steps)
 
         self.max_lr = self.base_max_lr * (self.gamma**self.cycle)
+        self.min_lr = self.base_min_lr * (self.gamma**self.cycle)
         self.last_epoch = math.floor(epoch)
         for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
             param_group['lr'] = lr
@@ -203,7 +189,7 @@ def find_empty_port():
     return port
 
 
-def load_checkpoint(checkpoint_path, model, optimizer=None, load_opt=1):
+def load_checkpoint(checkpoint_path, model, optimizer=None, load_opt=1, device="cuda"):
     assert os.path.isfile(checkpoint_path)
     checkpoint_dict = torch.load(checkpoint_path, map_location="cpu")
 
@@ -214,51 +200,8 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, load_opt=1):
         state_dict = model.state_dict()
     new_state_dict = {}
     for k, v in state_dict.items():  # 模型需要的shape
-        try:
-            new_state_dict[k] = saved_state_dict[k]
-            if saved_state_dict[k].shape != state_dict[k].shape:
-                print(
-                    f"shape-{k}-mismatch|need-{state_dict[k].shape}|get-{saved_state_dict[k].shape}"
-                )
-                if saved_state_dict[k].dim() == 2:  # NOTE: check is this ok?
-                    # for embedded input 256 <==> 768
-                    # this achieves we can continue training from original's pretrained checkpoints when using embedder that 768-th dim output etc.
-                    if saved_state_dict[k].dtype == torch.half:
-                        new_state_dict[k] = (
-                            F.interpolate(
-                                saved_state_dict[k].float().unsqueeze(0).unsqueeze(0),
-                                size=state_dict[k].shape,
-                                mode="bilinear",
-                            )
-                            .half()
-                            .squeeze(0)
-                            .squeeze(0)
-                        )
-                    else:
-                        new_state_dict[k] = (
-                            F.interpolate(
-                                saved_state_dict[k].unsqueeze(0).unsqueeze(0),
-                                size=state_dict[k].shape,
-                                mode="bilinear",
-                            )
-                            .squeeze(0)
-                            .squeeze(0)
-                        )
-                    print(
-                        "interpolated new_state_dict",
-                        k,
-                        "from",
-                        saved_state_dict[k].shape,
-                        "to",
-                        new_state_dict[k].shape,
-                    )
-                else:
-                    raise KeyError
-        except Exception as e:
-            # print(traceback.format_exc())
-            print(f"{k} is not in the checkpoint")
-            print("error: %s" % e)
-            new_state_dict[k] = v  # 模型自带的随机值
+        new_state_dict[k] = saved_state_dict[k].to(device)
+
     if hasattr(model, "module"):
         model.module.load_state_dict(new_state_dict, strict=False)
     else:

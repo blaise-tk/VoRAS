@@ -21,18 +21,17 @@ def create_trained_model(
     emb_ch: int,
     emb_output_layer: int,
     epoch: int,
+    speaker_info: Optional[dict[str, int]]
 ):
     state_dict = OrderedDict()
     state_dict["weight"] = {}
     for key in weights.keys():
-        if "enc_q" in key:
-            continue
-        state_dict["weight"][key] = weights[key].half()
+        state_dict["weight"][key] = weights[key]
     write_config(
         state_dict,
         {
             "segment_size": 150,
-            "n_fft": 1024,
+            "n_fft": 960,
             "hop_length": 240,
             "emb_channels": 768,
             "inter_channels": 512,
@@ -45,16 +44,18 @@ def create_trained_model(
             ],
             "use_spectral_norm": False,
             "gin_channels": 256,
-            "spk_embed_dim": 109,
+            "spk_embed_dim": 109 if speaker_info is None else len(speaker_info),
             "sr": 24000,
         },
     )
     state_dict["version"] = "voras_beta"
     state_dict["info"] = f"{epoch}epoch"
     state_dict["sr"] = sr
-    state_dict["f0"] = 1 if f0 else 0
+    state_dict["f0"] = 0
     state_dict["embedder_name"] = emb_name
     state_dict["embedder_output_layer"] = emb_output_layer
+    if not speaker_info is None:
+        state_dict["speaker_info"] = {str(v): str(k) for k, v in speaker_info.items()}
     return state_dict
 
 
@@ -68,6 +69,7 @@ def save(
     emb_output_layer: int,
     filepath: str,
     epoch: int,
+    speaker_info: Optional[dict[str, int]]
 ):
     if hasattr(model, "module"):
         state_dict = model.module.state_dict()
@@ -85,6 +87,7 @@ def save(
         emb_ch,
         emb_output_layer,
         epoch,
+        speaker_info
     )
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     torch.save(state_dict, filepath)

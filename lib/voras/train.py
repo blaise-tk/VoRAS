@@ -25,15 +25,14 @@ from torch.utils.tensorboard import SummaryWriter
 from . import commons, utils
 from .checkpoints import save
 from .config import DatasetMetadata, TrainConfig
-from .data_utils import (DistributedBucketSampler, TextAudioCollate,
-                         TextAudioCollateMultiNSFsid, TextAudioLoader,
-                         TextAudioLoaderMultiNSFsid)
-from .losses import MelLoss, discriminator_loss, feature_loss, generator_loss
+from .data_utils import AudioLabelCollate, AudioLabelLoader
+from .losses import (MelLoss, contrastive_loss, discriminator_loss,
+                     feature_loss, generator_loss)
 from .mel_processing import mel_spectrogram_torch, spec_to_mel_torch
-from .models import Discriminator, Synthesizer, SynthesizerNoPitch
+from .models import MultiPeriodDiscriminator, Synthesizer
 from .preprocessing.extract_feature import (MODELS_DIR, get_embedder,
                                             load_embedder)
-from .utils import AWP, CosineAnnealingWarmupRestarts
+from .utils import CosineAnnealingWarmupRestarts
 
 
 def is_audio_file(file: str):
@@ -53,153 +52,92 @@ def is_audio_file(file: str):
 
 def glob_dataset(
     glob_str: str,
-    speaker_id: int,
     multiple_speakers: bool = False,
     recursive: bool = True,
+    training_dir: str = ".",
+    mute_path: str = r"models\training\mute\0_gt_wavs\mute24k.wav"
 ):
     globs = glob_str.split(",")
+    speaker_count = 0
+    datasets_speakers = []
+    speaker_to_id_mapping = {}
+    meta = {
+        "type": "raw_dataset",
+        "files": []
+    }
     datasets_speakers = []
     for glob_str in globs:
-        if os.path.isdir(glob_str):
-            files = os.listdir(glob_str)
-            if multiple_speakers:
-                # pattern: {glob_str}/{decimal}[_]* and isdir
-                multi_speakers_dir = [
-                    (os.path.join(glob_str, f), int(f.split("_")[0]))
-                    for f in files
-                    if os.path.isdir(os.path.join(glob_str, f))
-                    and f.split("_")[0].isdecimal()
-                ]
-
-                if len(multi_speakers_dir) > 0:
-                    # multi speakers at once train
-                    datasets_speakers = [
-                        (file, dir[1])
-                        for dir in multi_speakers_dir
-                        for file in glob.iglob(
-                            os.path.join(dir[0], "*"), recursive=recursive
-                        )
-                        if is_audio_file(file)
-                    ]
+        if not os.path.isdir(glob_str):
+            continue
+        if multiple_speakers:
+            # Multispeaker format:
+            # dataset_path/
+            # - speakername/
+            #     - {wav name here}.wav
+            #     - ...
+            # - next_speakername/
+            #     - {wav name here}.wav
+            #     - ...
+            # - ...
+            print("Multispeaker dataset enabled; Processing speakers.")
+            for dir in tqdm.tqdm(os.listdir(glob_str)):
+                if not os.path.isdir(os.path.join(glob_str, dir)):
                     continue
-
-            glob_str = os.path.join(glob_str, "**", "*")
-
-        datasets_speakers.extend(
-            [
-                (file, speaker_id)
-                for file in glob.iglob(glob_str, recursive=recursive)
-                if is_audio_file(file)
-            ]
-        )
-
-    return sorted(datasets_speakers, key=operator.itemgetter(0))
-
-
-def create_dataset_meta(training_dir: str, f0: bool):
-    gt_wavs_dir = os.path.join(training_dir, "0_gt_wavs")
-    co256_dir = os.path.join(training_dir, "3_feature256")
-
-    def list_data(dir: str):
-        files = []
-        for subdir in os.listdir(dir):
-            speaker_dir = os.path.join(dir, subdir)
-            for name in os.listdir(speaker_dir):
-                files.append(os.path.join(subdir, name.split(".")[0]))
-        return files
-
-    names = set(list_data(gt_wavs_dir)) & set(list_data(co256_dir))
-
-    if f0:
-        f0_dir = os.path.join(training_dir, "2a_f0")
-        f0nsf_dir = os.path.join(training_dir, "2b_f0nsf")
-        names = names & set(list_data(f0_dir)) & set(list_data(f0nsf_dir))
-
-    meta = {
-        "files": {},
-    }
-
-    for name in names:
-        speaker_id = os.path.dirname(name).split("_")[0]
-        speaker_id = int(speaker_id) if speaker_id.isdecimal() else 0
-        if f0:
-            gt_wav_path = os.path.join(gt_wavs_dir, f"{name}.wav")
-            co256_path = os.path.join(co256_dir, f"{name}.npy")
-            f0_path = os.path.join(f0_dir, f"{name}.wav.npy")
-            f0nsf_path = os.path.join(f0nsf_dir, f"{name}.wav.npy")
-            meta["files"][name] = {
-                "gt_wav": gt_wav_path,
-                "co256": co256_path,
-                "f0": f0_path,
-                "f0nsf": f0nsf_path,
-                "speaker_id": speaker_id,
-            }
+                speaker_to_id_mapping[dir] = speaker_count
+                speaker_path = os.path.join(glob_str, dir)
+                datasets_speaker = [
+                    (file, speaker_count)
+                    for file in glob.iglob(
+                        os.path.join(speaker_path, "**", "*"), recursive=recursive
+                    )
+                    if is_audio_file(file)
+                ]
+                datasets_speaker.append((mute_path, speaker_count))
+                if len(datasets_speaker):
+                    print("Speaker ID " + str(speaker_count) + ": " + dir)
+                    datasets_speakers.extend(datasets_speaker)
+                    speaker_count += 1
         else:
-            gt_wav_path = os.path.join(gt_wavs_dir, f"{name}.wav")
-            co256_path = os.path.join(co256_dir, f"{name}.npy")
-            meta["files"][name] = {
-                "gt_wav": gt_wav_path,
-                "co256": co256_path,
-                "speaker_id": speaker_id,
-            }
+            glob_str = os.path.join(glob_str, "**", "*")
+            print("Single speaker dataset enabled; Processing speaker as ID " + str(0) + ".")
+            datasets_speakers.extend(
+                [
+                    (file, 0)
+                    for file in glob.iglob(glob_str, recursive=recursive)
+                    if is_audio_file(file)
+                ]
+            )
+            datasets_speakers.append((mute_path, speaker_count))
+    if len(speaker_to_id_mapping):
+        with open(os.path.join(training_dir, "speaker_info.json"), "w") as outfile:
+            print("Dumped speaker info to ./speaker_info.json")
+            json.dump(speaker_to_id_mapping, outfile)
+    return sorted(datasets_speakers)
 
-    with open(os.path.join(training_dir, "meta.json"), "w") as f:
-        json.dump(meta, f, indent=2)
 
-
-def change_speaker(net_g, speaker_info, embedder, embedding_output_layer, phone, phone_lengths, pitch, pitchf, spec_lengths):
-    """
-    random change formant
-    inspired by https://github.com/auspicious3000/contentvec/blob/d746688a32940f4bee410ed7c87ec9cf8ff04f74/contentvec/data/audio/audio_utils_1.py#L179
-    """
-    N = phone.shape[0]
-    device = phone.device
-    dtype = phone.dtype
-
-    f0_bin = 256
-    f0_max = 1100.0
-    f0_min = 50.0
-    f0_mel_min = 1127 * np.log(1 + f0_min / 700)
-    f0_mel_max = 1127 * np.log(1 + f0_max / 700)
-
-    pitch_median = torch.median(pitchf, 1).values
-    lo = 75. + 25. * (pitch_median >= 200).to(dtype=dtype)
-    hi = 250. + 150. * (pitch_median >= 200).to(dtype=dtype)
-    pitch_median = torch.clip(pitch_median, lo, hi).unsqueeze(1)
-
-    shift_pitch = torch.exp2((1. - 2. * torch.rand(N)) / 4).unsqueeze(1).to(device, dtype)   # ピッチを.5オクターブの範囲でずらす
-
-    new_sid = np.random.choice(np.arange(len(speaker_info))[speaker_info > 0], size=N)
-    rel_pitch = pitchf / pitch_median
-    new_pitch_median = torch.from_numpy(speaker_info[new_sid]).to(device, dtype).unsqueeze(1) * shift_pitch
-    new_pitchf = new_pitch_median * rel_pitch
-    new_sid = torch.from_numpy(new_sid).to(device)
-
-    new_pitch = 1127. * torch.log(1. + new_pitchf / 700.)
-    new_pitch = (pitch - f0_mel_min) * (f0_bin - 2.) / (f0_mel_max - f0_mel_min) + 1.
-    new_pitch = torch.clip(new_pitch, 1, f0_bin - 1).to(dtype=torch.int)
-
-    new_wave = net_g.infer(phone, phone_lengths, new_pitch, new_pitchf, new_sid)[0]
-    new_wave_16k = torchaudio.functional.resample(new_wave, net_g.sr, 16000, rolloff=0.99).squeeze(1)
-    padding_mask = torch.arange(new_wave_16k.shape[1]).unsqueeze(0).to(device) > (spec_lengths.unsqueeze(1) * 160).to(device)
-
-    inputs = {
-        "source": new_wave_16k.to(device, dtype),
-        "padding_mask": padding_mask.to(device),
-        "output_layer": embedding_output_layer
+def create_dataset_meta(
+    glob_str: str,
+    multiple_speakers: bool = False,
+    recursive: bool = True,
+    training_dir: str = ".",
+    segment_size: int = 48000,
+    mute_path: str = "."
+):
+    meta = {
+        "type": "raw_dataset",
+        "files": [],
     }
-    logits = embedder.extract_features(**inputs)
-    if phone.shape[-1] == 768:
-        feats = logits[0]
-    else:
-        feats = embedder.final_proj(logits[0])
-    feats = torch.repeat_interleave(feats, 2, 1)
-    new_phone = torch.zeros(phone.shape).to(device, dtype)
-    new_phone[:, :feats.shape[1]] = feats[:, :phone.shape[1]]
-    return new_phone.to(device), new_wave
+
+    for file, speaker_id in glob_dataset(glob_str, multiple_speakers, recursive, training_dir, mute_path):
+        count = max(1, os.path.getsize(file) // 2 // segment_size)
+        for _ in range(count):
+            meta["files"].append({"raw_file": file, "speaker_id": speaker_id})
+
+    with open(os.path.join(training_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
 
 
-def change_speaker_nono(net_g, embedder, embedding_output_layer, phone, phone_lengths, spec_lengths):
+def change_speaker(net_g, embedder, embedding_output_layer, phone, wave_16k):
     """
     random change formant
     inspired by https://github.com/auspicious3000/contentvec/blob/d746688a32940f4bee410ed7c87ec9cf8ff04f74/contentvec/data/audio/audio_utils_1.py#L179
@@ -211,96 +149,25 @@ def change_speaker_nono(net_g, embedder, embedding_output_layer, phone, phone_le
     new_sid = np.random.randint(net_g.spk_embed_dim, size=N)
     new_sid = torch.from_numpy(new_sid).to(device)
 
-    new_wave = net_g.infer(phone, phone_lengths, new_sid)[0]
-    new_wave_16k = torchaudio.functional.resample(new_wave, net_g.sr, 16000, rolloff=0.99).squeeze(1)
-    padding_mask = torch.arange(new_wave_16k.shape[1]).unsqueeze(0).to(device) > (spec_lengths.unsqueeze(1) * 160).to(device)
+    new_wave = net_g.infer(phone, new_sid)[0]
+    new_wave_16k = torchaudio.functional.resample(new_wave, net_g.sr, 16000, rolloff=0.99)
+    padding_mask = torch.zeros_like(new_wave_16k, dtype=torch.bool).to(device)
 
     inputs = {
-        "source": new_wave_16k.to(device, dtype),
-        "padding_mask": padding_mask.to(device),
+        "source": new_wave_16k.squeeze(1).to(device, dtype),
+        "padding_mask": padding_mask.squeeze(1).to(device),
         "output_layer": embedding_output_layer
     }
 
     logits = embedder.extract_features(**inputs)
-    if phone.shape[-1] == 768:
-        feats = logits[0]
-    else:
-        feats = embedder.final_proj(logits[0])
+    feats = logits[0]
     feats = torch.repeat_interleave(feats, 2, 1)
-    new_phone = torch.zeros(phone.shape).to(device, dtype)
-    new_phone[:, :feats.shape[1]] = feats[:, :phone.shape[1]]
-    return new_phone.to(device), new_wave
-
-
-def train_index(
-    training_dir: str,
-    model_name: str,
-    out_dir: str,
-    emb_ch: int,
-    num_cpu_process: int,
-    maximum_index_size: Optional[int],
-):
-    checkpoint_path = os.path.join(out_dir, model_name)
-    feature_256_dir = os.path.join(training_dir, "3_feature256")
-    index_dir = os.path.join(os.path.dirname(checkpoint_path), f"{model_name}_index")
-    os.makedirs(index_dir, exist_ok=True)
-    for speaker_id in tqdm.tqdm(
-        sorted([dir for dir in os.listdir(feature_256_dir) if dir.isdecimal()])
-    ):
-        feature_256_spk_dir = os.path.join(feature_256_dir, speaker_id)
-        speaker_id = int(speaker_id)
-        npys = []
-        for name in [
-            os.path.join(feature_256_spk_dir, file)
-            for file in os.listdir(feature_256_spk_dir)
-            if file.endswith(".npy")
-        ]:
-            phone = np.load(os.path.join(feature_256_spk_dir, name))
-            npys.append(phone)
-
-        # shuffle big_npy to prevent reproducing the sound source
-        big_npy = np.concatenate(npys, 0)
-        big_npy_idx = np.arange(big_npy.shape[0])
-        np.random.shuffle(big_npy_idx)
-        big_npy = big_npy[big_npy_idx]
-
-        if not maximum_index_size is None and big_npy.shape[0] > maximum_index_size:
-            kmeans = MiniBatchKMeans(
-                n_clusters=maximum_index_size,
-                batch_size=256 * num_cpu_process,
-                init="random",
-                compute_labels=False,
-            )
-            kmeans.fit(big_npy)
-            big_npy = kmeans.cluster_centers_
-
-        # recommend parameter in https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index
-        emb_ch = big_npy.shape[1]
-        emb_ch_half = emb_ch // 2
-        n_ivf = int(8 * np.sqrt(big_npy.shape[0]))
-        if big_npy.shape[0] >= 1_000_000:
-            index = faiss.index_factory(
-                emb_ch, f"IVF{n_ivf},PQ{emb_ch_half}x4fsr,RFlat"
-            )
-        else:
-            index = faiss.index_factory(emb_ch, f"IVF{n_ivf},Flat")
-
-        index.train(big_npy)
-        batch_size_add = 8192
-        for i in range(0, big_npy.shape[0], batch_size_add):
-            index.add(big_npy[i : i + batch_size_add])
-        np.save(
-            os.path.join(index_dir, f"{model_name}.{speaker_id}.big.npy"),
-            big_npy,
-        )
-        faiss.write_index(
-            index,
-            os.path.join(index_dir, f"{model_name}.{speaker_id}.index"),
-        )
+    return feats.to(device), new_wave, new_wave_16k, new_sid
 
 
 def train_model(
     gpus: List[int],
+    num_cpu_process: int,
     config: TrainConfig,
     training_dir: str,
     model_name: str,
@@ -310,11 +177,10 @@ def train_model(
     batch_size: int,
     augment: bool,
     augment_path: Optional[str],
-    speaker_info_path: Optional[str],
     multiple_speakers: bool,
-    cache_batch: bool,
     total_epoch: int,
     save_every_epoch: int,
+    finetuning: bool,
     pretrain_g: str,
     pretrain_d: str,
     embedder_name: str,
@@ -341,6 +207,7 @@ def train_model(
         training_runner(
             0,  # rank
             1,  # world size
+            num_cpu_process,
             config,
             training_dir,
             model_name,
@@ -350,11 +217,10 @@ def train_model(
             batch_size,
             augment,
             augment_path,
-            speaker_info_path,
             multiple_speakers,
-            cache_batch,
             total_epoch,
             save_every_epoch,
+            finetuning,
             pretrain_g,
             pretrain_d,
             embedder_name,
@@ -368,6 +234,7 @@ def train_model(
             nprocs=len(gpus),
             args=(
                 len(gpus),
+                num_cpu_process,
                 config,
                 training_dir,
                 model_name,
@@ -377,11 +244,10 @@ def train_model(
                 batch_size,
                 augment,
                 augment_path,
-                speaker_info_path,
                 multiple_speakers,
-                cache_batch,
                 total_epoch,
                 save_every_epoch,
+                finetuning,
                 pretrain_g,
                 pretrain_d,
                 embedder_name,
@@ -407,6 +273,7 @@ def train_model(
 def training_runner(
     rank: int,
     world_size: List[int],
+    num_cpu_process: int,
     config: TrainConfig,
     training_dir: str,
     model_name: str,
@@ -416,11 +283,10 @@ def training_runner(
     batch_size: int,
     augment: bool,
     augment_path: Optional[str],
-    speaker_info_path: Optional[str],
     multiple_speakers: bool,
-    cache_in_gpu: bool,
     total_epoch: int,
     save_every_epoch: int,
+    finetuning: bool,
     pretrain_g: str,
     pretrain_d: str,
     embedder_name: str,
@@ -431,8 +297,6 @@ def training_runner(
     config.train.batch_size = batch_size
     log_dir = os.path.join(training_dir, "logs")
     state_dir = os.path.join(training_dir, "state")
-    training_files_path = os.path.join(training_dir, "meta.json")
-    training_meta = DatasetMetadata.parse_file(training_files_path)
     embedder_out_channels = config.model.emb_channels
 
     is_multi_process = world_size > 1
@@ -457,70 +321,54 @@ def training_runner(
         torch.cuda.set_device(rank)
 
     torch.manual_seed(config.train.seed)
+    training_files_path = os.path.join(training_dir, "meta.json")
+    with open(training_files_path, encoding="utf-8") as f:
+        d = json.load(f)
 
-    if f0:
-        train_dataset = TextAudioLoaderMultiNSFsid(training_meta, config.data)
-    else:
-        train_dataset = TextAudioLoader(training_meta, config.data)
-
-    train_sampler = DistributedBucketSampler(
-        train_dataset,
-        config.train.batch_size * world_size,
-        [100, 200, 300, 400, 500, 600, 700, 800, 900],
-        num_replicas=world_size,
-        rank=rank,
-        shuffle=True,
-    )
-
-    if f0:
-        collate_fn = TextAudioCollateMultiNSFsid()
-    else:
-        collate_fn = TextAudioCollate()
-
+    training_meta = DatasetMetadata.parse_file(training_files_path)
+    train_dataset = AudioLabelLoader(training_meta, config.data)
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset,
+                                                                    num_replicas=world_size,
+                                                                    rank=rank,
+                                                                    shuffle=True)
+    collate_fn = AudioLabelCollate()
     train_loader = DataLoader(
         train_dataset,
-        num_workers = os.cpu_count() // 2,
+        batch_size=batch_size,
+        num_workers = num_cpu_process,
         shuffle=False,
         pin_memory=True,
         collate_fn=collate_fn,
-        batch_sampler=train_sampler,
+        sampler=train_sampler,
         persistent_workers=True,
         prefetch_factor=2,
     )
 
-    if f0:
-        net_g = Synthesizer(
-            config.train.segment_size // config.data.hop_length,
-            config.data.filter_length,
-            config.data.hop_length,
-            **config.model.dict(),
-            is_half=False,
-            sr=int(sample_rate[:-1] + "000"),
-        )
-    else:
-        net_g = SynthesizerNoPitch(
-            config.train.segment_size // config.data.hop_length,
-            config.data.filter_length,
-            config.data.hop_length,
-            **config.model.dict(),
-            is_half=False,
-            sr=int(sample_rate[:-1] + "000"),
-        )
+    speaker_info = None
+    if os.path.exists(os.path.join(training_dir, "speaker_info.json")):
+        with open(os.path.join(training_dir, "speaker_info.json"), "r") as f:
+            speaker_info = json.load(f)
+            config.model.spk_embed_dim = len(speaker_info)
+
+    net_g = Synthesizer(
+        config.data.segment_size // config.data.hop_length,
+        config.data.filter_length,
+        config.data.hop_length,
+        **config.model.dict(),
+        is_half=False,
+        sr=int(sample_rate[:-1] + "000"),
+    )
+    if finetuning:
+        for p in net_g.speaker_embedder.parameters():
+            p.requires_grad = False
 
     if is_multi_process:
         net_g = net_g.cuda(rank)
     else:
         net_g = net_g.to(device=device)
 
-    if config.version == "voras":
-        periods = [1, 2, 3, 5, 7, 11, 17, 23, 37]
-    else:
-        raise
-    net_d = Discriminator(multiple_speakers=multiple_speakers, periods=periods, **config.model.dict())
-    if is_multi_process:
-        net_d = net_d.cuda(rank)
-    else:
-        net_d = net_d.to(device=device)
+    periods = [1, 2, 3, 5, 7, 11, 17, 23, 37]
+    net_d = MultiPeriodDiscriminator(periods=periods, **config.model.dict())
 
     # in GAN, weight decay inn't need
     # https://github.com/juntang-zhuang/Adabelief-Optimizer
@@ -537,70 +385,24 @@ def training_runner(
         eps=config.train.eps,
     )
 
-    awp = AWP(net_g, optim_g, adv_lr=1e-3, adv_eps=1e-2)
-
-    if is_multi_process:
-        net_g = DDP(net_g, device_ids=[rank])
-        net_d = DDP(net_d, device_ids=[rank])
-
     last_d_state = utils.latest_checkpoint_path(state_dir, "D_*.pth")
     last_g_state = utils.latest_checkpoint_path(state_dir, "G_*.pth")
-
-    if augment:
-        # load embedder
-        embedder_filepath, _, embedder_load_from = get_embedder(embedder_name)
-
-        if embedder_load_from == "local":
-            embedder_filepath = os.path.join(
-                MODELS_DIR, "embeddings", embedder_filepath
-            )
-        embedder, _ = load_embedder(embedder_filepath, device)
-        if not config.train.fp16_run:
-            embedder = embedder.float()
-
-        if (augment_path is not None):
-            state_dict = torch.load(augment_path, map_location="cpu")
-            if state_dict["f0"]:
-                augment_net_g = Synthesizer(
-                    **state_dict["params"], is_half=False
-                )
-                augment_speaker_info = np.load(speaker_info_path)
-                augment_f0 = True
-            else:
-                augment_net_g = SynthesizerNoPitch(
-                    **state_dict["params"], is_half=False
-                )
-                augment_f0 = False
-
-            augment_net_g.load_state_dict(state_dict["weight"], strict=False)
-            augment_net_g.eval().to(device)
-            augment_net_g.remove_weight_norm()
-
-        else:
-            augment_net_g = net_g
-            augment_f0 = False
-            if f0:
-                augment_f0 = True
-                medians = [[] for _ in range(augment_net_g.spk_embed_dim)]
-                for file in training_meta.files.values():
-                    f0f = np.load(file.f0nsf)
-                    if np.any(f0f > 0):
-                        medians[file.speaker_id].append(np.median(f0f[f0f > 0]))
-                augment_speaker_info = np.array([np.median(x) if len(x) else 0. for x in medians])
-                np.save(os.path.join(training_dir, "speaker_info.npy"), augment_speaker_info)
 
     if last_d_state is None or last_g_state is None:
         epoch = 1
         global_step = 0
         if os.path.exists(pretrain_g) and os.path.exists(pretrain_d):
             net_g_state = torch.load(pretrain_g, map_location="cpu")["model"]
-            if is_multi_process:
-                net_g.module.load_state_dict(net_g_state)
-            else:
-                net_g.load_state_dict(net_g_state)
 
+            emb_spk_size = (config.model.spk_embed_dim, config.model.gin_channels)
+            if emb_spk_size != net_g_state["emb_g.weight"].size():
+                original_weight = net_g_state["emb_g.weight"]
+                net_g_state["emb_g.weight"] = original_weight.mean(dim=0, keepdims=True) * torch.ones(emb_spk_size, device=original_weight.device, dtype=original_weight.dtype)
+            if is_multi_process:
+                net_g.module.load_state_dict(net_g_state, strict=False)
+            else:
+                net_g.load_state_dict(net_g_state, strict=False)
             del net_g_state
-            net_g.emb_g.weight.data = torch.ones_like(net_g.emb_g.weight.data) * torch.mean(net_g.emb_g.weight.data, dim=0, keepdim=True)
 
             if is_multi_process:
                 net_d.module.load_state_dict(
@@ -614,234 +416,274 @@ def training_runner(
                 print(f"loaded pretrained {pretrain_g} {pretrain_d}")
 
     else:
-        _, _, _, epoch = utils.load_checkpoint(last_d_state, net_d, optim_d)
-        _, _, _, epoch = utils.load_checkpoint(last_g_state, net_g, optim_g)
+        _, _, _, epoch = utils.load_checkpoint(last_d_state, net_d, optim_d, device)
+        _, _, _, epoch = utils.load_checkpoint(last_g_state, net_g, optim_g, device)
         if is_main_process:
             print(f"loaded last state {last_d_state} {last_g_state}")
 
         epoch += 1
         global_step = (epoch - 1) * len(train_loader)
 
-    scheduler_g = torch.optim.lr_scheduler.ExponentialLR(
-        optim_g, gamma=config.train.lr_decay, last_epoch=epoch - 2
-    )
-    #scheduler_g = CosineAnnealingWarmupRestarts(
-    #    optimizer=optim_g,
-    #    first_cycle_steps=len(train_loader) * 10,
-    #    cycle_mult=1,
-    ##    max_lr=config.train.learning_rate * 5,
-    #   min_lr=config.train.learning_rate / 2,
-    #    warmup_steps=len(train_loader) * 5,
-    #    gamma=.8,
-    #    last_epoch=-1
-    #)
-    scheduler_d = torch.optim.lr_scheduler.ExponentialLR(
-        optim_d, gamma=config.train.lr_decay, last_epoch=epoch - 2
-    )
+    if augment:
+        # load embedder
+        embedder_filepath, _, embedder_load_from = get_embedder(embedder_name)
+
+        if embedder_load_from == "local":
+            embedder_filepath = os.path.join(
+                MODELS_DIR, "embeddings", embedder_filepath
+            )
+        embedder, _ = load_embedder(embedder_filepath, device)
+
+        if (augment_path is not None):
+            state_dict = torch.load(augment_path, map_location="cpu")
+            augment_net_g = Synthesizer(
+                **state_dict["params"], is_half=False
+            )
+            augment_net_g.load_state_dict(state_dict["weight"], strict=False)
+            augment_net_g.eval().to(device)
+            augment_net_g.remove_weight_norm()
+        else:
+            augment_net_g = net_g
+
+    if is_multi_process:
+        net_g = net_g.cuda(rank)
+        net_d = net_d.cuda(rank)
+        net_g = DDP(net_g, device_ids=[rank])
+        net_d = DDP(net_d, device_ids=[rank])
+    else:
+        net_g = net_g.to(device=device)
+        net_d = net_d.to(device=device)
+
+    if finetuning:
+        scheduler_g = torch.optim.lr_scheduler.ExponentialLR(
+            optim_g, gamma=config.train.lr_decay, last_epoch=-1
+        )
+        scheduler_d = torch.optim.lr_scheduler.ExponentialLR(
+            optim_d, gamma=config.train.lr_decay, last_epoch=-1
+        )
+    else:
+        scheduler_g = CosineAnnealingWarmupRestarts(
+            optimizer=optim_g,
+            first_cycle_steps=int(len(train_loader) * .5),
+            cycle_mult=1,
+            max_lr=config.train.learning_rate * 5,
+            min_lr=config.train.learning_rate,
+            first_lr=config.train.learning_rate / 10,
+            warmup_steps=int(len(train_loader) * .25),
+            gamma=.9,
+            last_epoch=-1
+        )
+        scheduler_d = CosineAnnealingWarmupRestarts(
+            optimizer=optim_d,
+            first_cycle_steps=int(len(train_loader) * .5),
+            cycle_mult=1,
+            max_lr=config.train.learning_rate * 5,
+            min_lr=config.train.learning_rate,
+            first_lr=config.train.learning_rate / 10,
+            warmup_steps=int(len(train_loader) * .25),
+            gamma=.9,
+            last_epoch=-1
+        )
+
+    for _ in range(epoch-1):
+        for _ in range(len(train_loader)):
+            scheduler_d.step()
+            scheduler_g.step()
 
     scaler = GradScaler(enabled=config.train.fp16_run)
 
     mel_loss = MelLoss(
         sample_rate=int(sample_rate[:-1] + "000"),
-        n_fft=2048,
-        win_length=2048,
+        n_fft=config.data.filter_length,
+        win_length=config.data.win_length,
         hop_length=config.data.hop_length,
         f_min=config.data.mel_fmin,
         f_max=config.data.mel_fmax
     ).to(device=device)
 
-    cache = []
     progress_bar = tqdm.tqdm(range((total_epoch - epoch + 1) * len(train_loader)))
     progress_bar.set_postfix(epoch=epoch)
     step = -1 + len(train_loader) * (epoch - 1)
+    for _ in range(step + 1):
+        scheduler_g.step()
+        scheduler_d.step()
     optim_g.zero_grad()
     optim_d.zero_grad()
+
+    if epoch == 1 and not finetuning:
+        optim_s = torch.optim.Adam(
+            chain(net_g.emb_g.parameters(), net_g.speaker_embedder.parameters()),
+            config.train.learning_rate,
+            betas=[.9, .999],
+            eps=config.train.eps,
+        )
+        with tqdm.tqdm(total=len(train_loader)) as pbar:
+            for batch in train_loader:
+                (
+                    wave,
+                    sid,
+                ) = batch
+                sid = sid.to(device=device, non_blocking=True)
+                wave = wave.to(device=device, non_blocking=True)
+                wave_16k = torchaudio.functional.resample(wave, net_g.sr, 16000, rolloff=0.99)
+                with autocast(enabled=config.train.fp16_run, dtype=torch.bfloat16):
+                    g_origin = net_g.speaker_embedder(wave_16k)
+                    loss_spk = contrastive_loss(g_origin, sid, net_g.emb_g.weight.data) * config.train.c_spk
+                optim_s.zero_grad()
+                loss_spk.backward()
+                grad_norm_d = commons.clip_grad_value_(chain(net_g.emb_g.parameters(), net_g.speaker_embedder.parameters()), None)
+                if np.all([torch.all(torch.isfinite(p.grad)).detach().cpu().numpy() for p in chain(net_g.emb_g.parameters(), net_g.speaker_embedder.parameters())if p.requires_grad and type(p.grad) is torch.Tensor]):
+                    optim_s.step()
+                else:
+                    print("skip")
+                pbar.update(1)
+                pbar.set_postfix(
+                    epoch=epoch,
+                    loss_spk=float(loss_spk) if loss_spk is not None else 0.0,
+                    )
+            del optim_s
+    elif epoch == 1 and finetuning:
+        new_weight = torch.zeros_like(net_g.emb_g.weight.data)
+        new_norm = torch.norm(net_g.emb_g.weight.data, p=2, dim=1, keepdim=True).mean(dim=0, keepdim=True)
+        with tqdm.tqdm(total=len(train_loader)) as pbar:
+            for batch in train_loader:
+                (
+                    wave,
+                    sid,
+                ) = batch
+                sid = sid.to(device=device, non_blocking=True)
+                wave = wave.to(device=device, non_blocking=True)
+                wave_16k = torchaudio.functional.resample(wave, net_g.sr, 16000, rolloff=0.99)
+                g_pred = net_g.speaker_embedder(wave_16k)
+                new_weight.scatter_add_(0, sid.view(-1, 1).expand([-1, new_weight.shape[1]]), g_pred)
+        net_g.emb_g.weight.data = new_norm * new_weight / torch.clamp(torch.norm(new_weight, p=2, dim=1, keepdim=True), min=1e-7)
+
     for epoch in range(epoch, total_epoch + 1):
-        train_loader.batch_sampler.set_epoch(epoch)
 
         net_g.train()
         net_d.train()
 
-        use_cache = len(cache) == len(train_loader)
-        data = cache if use_cache else enumerate(train_loader)
+        data = enumerate(train_loader)
 
         if is_main_process:
             lr = optim_g.param_groups[0]["lr"]
 
-        if use_cache:
-            shuffle(cache)
-
         for batch_idx, batch in data:
             step += 1
             progress_bar.update(1)
-            if f0:
-                (
-                    phone,
-                    phone_lengths,
-                    pitch,
-                    pitchf,
-                    spec,
-                    spec_lengths,
-                    wave,
-                    wave_lengths,
-                    sid,
-                ) = batch
-            else:
-                (
-                    phone,
-                    phone_lengths,
-                    spec,
-                    spec_lengths,
-                    wave,
-                    wave_lengths,
-                    sid,
-                ) = batch
+            (
+                wave,
+                sid,
+            ) = batch
+            sid = sid.to(device=device, non_blocking=True)
+            wave = wave.to(device=device, non_blocking=True)
+            with torch.no_grad():
+                wave_16k = torchaudio.functional.resample(wave, net_g.sr, 16000, rolloff=0.99)
+                padding_mask = torch.zeros_like(wave_16k.squeeze(1), dtype=torch.bool).to(device)
 
-            if not use_cache:
-                phone, phone_lengths = (
-                    phone.to(device=device, non_blocking=True),
-                    phone_lengths.to(device=device, non_blocking=True),
-                )
-                if f0:
-                    pitch, pitchf = (
-                        pitch.to(device=device, non_blocking=True),
-                        pitchf.to(device=device, non_blocking=True),
-                    )
-                sid = sid.to(device=device, non_blocking=True)
-                spec, spec_lengths = (
-                    spec.to(device=device, non_blocking=True),
-                    spec_lengths.to(device=device, non_blocking=True),
-                )
-                wave, wave_lengths = (
-                    wave.to(device=device, non_blocking=True),
-                    wave_lengths.to(device=device, non_blocking=True),
-                )
-                if cache_in_gpu:
-                    if f0:
-                        cache.append(
-                            (
-                                batch_idx,
-                                (
-                                    phone,
-                                    phone_lengths,
-                                    pitch,
-                                    pitchf,
-                                    spec,
-                                    spec_lengths,
-                                    wave,
-                                    wave_lengths,
-                                    sid,
-                                ),
-                            )
-                        )
-                    else:
-                        cache.append(
-                            (
-                                batch_idx,
-                                (
-                                    phone,
-                                    phone_lengths,
-                                    spec,
-                                    spec_lengths,
-                                    wave,
-                                    wave_lengths,
-                                    sid,
-                                ),
-                            )
-                        )
-            if step > 5 * len(train_loader):
-                awp.perturb()
+                inputs = {
+                    "source": wave_16k.to(device).squeeze(1),
+                    "padding_mask": padding_mask.to(device),
+                    "output_layer": embedding_output_layer
+                }
+
+                phone = embedder.extract_features(**inputs)[0]
+                phone = torch.repeat_interleave(phone, 2, 1)
 
             with autocast(enabled=config.train.fp16_run, dtype=torch.bfloat16):
-                if augment and step > 5 * len(train_loader):
-                    if augment_f0:
-                        with torch.no_grad():
-                            new_phone, new_wave = change_speaker(augment_net_g, augment_speaker_info, embedder, embedding_output_layer, phone, phone_lengths, pitch, pitchf, spec_lengths)
-                            weight = 1 - np.power(.8, (step - 5 * len(train_loader))) # 学習の初期はそのままのphone embeddingを使う
-                            phone = phone * (1. - weight) + new_phone * weight
+                with torch.no_grad():
+                    if augment and (finetuning or (step > config.train.augment_start_steps)):
+                        new_phone, new_wave, new_wave_16k, new_sid = change_speaker(augment_net_g, embedder, embedding_output_layer, phone, wave_16k)
+                        if augment_path is not None:
+                            new_sid = torch.where(torch.rand(sid.shape).to(phone.device) < 1 / augment_net_g.spk_embed_dim, sid, new_sid * 0 - 1)
+                        stay_prob = 0.01 * np.power(.8, (step - config.train.augment_start_steps) / len(train_loader))
+                        new_sid = torch.where(torch.rand(sid.shape).to(phone.device) < stay_prob, sid, new_sid * 0 - 1)
+                        weight = 1 - np.power(.1, (step - config.train.augment_start_steps) / len(train_loader)) # 学習の初期はそのままのphone embeddingを使う
                     else:
-                        with torch.no_grad():
-                            new_phone, new_wave = change_speaker_nono(augment_net_g, embedder, embedding_output_layer, phone, phone_lengths, spec_lengths)
-                            weight = 1 - np.power(.8, (step - 5 * len(train_loader))) # 学習の初期はそのままのphone embeddingを使う
-                            phone = phone * (1. - weight) + new_phone * weight
+                        new_phone, new_wave, new_wave_16k, new_sid = phone.detach(), wave.detach(), wave_16k.detach(), sid.detach()
+                        weight = 1.
+                    phone_delta = (phone.shape[1] - new_phone.shape[1])//2
+                    if phone_delta:
+                        phone = phone[:, phone_delta:-phone_delta]
+                    phone = torch.where(torch.reshape(sid == new_sid, (-1, 1, 1)), phone,  phone * (1. - weight) + new_phone * weight)
 
-                if f0:
-                    (
-                        y_hat,
-                        ids_slice,
-                        x_mask,
-                        g
-                    ) = net_g(
-                        phone, phone_lengths, pitch, pitchf, sid
-                    )
-                else:
-                    (
-                        y_hat,
-                        ids_slice,
-                        x_mask,
-                        g
-                    ) = net_g(
-                        phone, phone_lengths, sid
-                    )
+                    wave_16k_delta = (wave_16k.shape[2] - new_wave_16k.shape[2])//2
+                    if wave_16k_delta:
+                        wave_16k = wave_16k[:, :, wave_16k_delta:-wave_16k_delta]
+                    new_wave_16k = torch.where(torch.reshape(sid == new_sid, (-1, 1, 1)), wave_16k,  wave_16k * (1. - weight) + new_wave_16k * weight)
+                    new_wave_16k = (new_wave_16k / torch.clamp(torch.max(torch.abs(new_wave_16k), dim=2, keepdims=True)[0], min=1e-7) * (.95 * .8)) + 0.2 * new_wave_16k
 
-                wave = commons.slice_segments(
-                    wave, ids_slice * config.data.hop_length, config.train.segment_size
-                )  # slice
+                    wave_delta = (wave.shape[2] - phone.shape[1] * config.data.hop_length)//2
+                    if wave_delta:
+                        wave = wave[:, :, wave_delta:-wave_delta]
+
+            with autocast(enabled=config.train.fp16_run, dtype=torch.bfloat16):
+                (
+                    y_hat,
+                    g_in,
+                    g_out
+                ) = net_g(
+                    phone, sid
+                )
                 y_hat, wave = y_hat[:, :, :wave.shape[2]], wave[:, :, :y_hat.shape[2]]
 
+            with autocast(enabled=config.train.fp16_run, dtype=torch.bfloat16):
                 # Generator
+                y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(wave, y_hat, g_out.detach())
+                g_origin = net_g.speaker_embedder(wave_16k)
                 with autocast(enabled=False):
+                    if finetuning or not multiple_speakers:
+                        loss_spk = 0.
+                    else:
+                        loss_spk = contrastive_loss(g_origin, sid, net_g.emb_g.weight.data) * config.train.c_spk
                     loss_mel, y_mel, y_hat_mel = mel_loss(wave.float(), y_hat.float())
                     loss_mel = loss_mel * config.train.c_mel
-                y_d_hat_r, y_d_hat_g, fmap_r, fmap_g, loss_spk_gen = net_d(wave, y_hat, g.detach(), y_mel.detach(), sid, net_g.emb_g.weight.data)
-                with autocast(enabled=False):
                     loss_fm = feature_loss(fmap_r, fmap_g)
                     loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                    loss_gen_all = loss_gen + loss_fm  + loss_mel + loss_spk_gen
+                    loss_gen_all = loss_gen + loss_fm  + loss_mel + loss_spk
             optim_g.zero_grad()
-            if config.train.fp16_run:
-                scaler.scale(loss_gen_all).backward()
-                scaler.unscale_(optim_g)
-            else:
-                loss_gen_all.backward()
-            if step > 5 * len(train_loader):
-                awp.restore()
+            #if config.train.fp16_run:
+            #    scaler.scale(loss_gen_all).backward()
+            #    scaler.unscale_(optim_g)
+            #else:
+            loss_gen_all.backward()
             grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
             if np.all([torch.all(torch.isfinite(p.grad)).detach().cpu().numpy() for p in net_g.parameters() if p.requires_grad and type(p.grad) is torch.Tensor]):
-                if config.train.fp16_run:
-                    scaler.step(optim_g)
-                else:
-                    optim_g.step()
+                #if config.train.fp16_run:
+                #    scaler.step(optim_g)
+                #else:
+                optim_g.step()
             else:
                 print("contains nan generator")
-            scaler.update()
+            # scaler.update()
 
-            optim_d.zero_grad()
             with autocast(enabled=config.train.fp16_run, dtype=torch.bfloat16):
                 # Discriminator
-                g = net_g.emb_g(sid).unsqueeze(-1)
-                y_d_hat_r, y_d_hat_g, _, _ , loss_spk_disc = net_d(wave, y_hat.detach(), g, y_mel.detach(), sid.detach(), net_g.emb_g.weight.data.detach())
+                g_out = net_g.emb_g(sid).unsqueeze(-1)
+                y_d_hat_r, y_d_hat_g, _, _ = net_d(wave, y_hat.detach(), g_out)
                 with autocast(enabled=False):
                     loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
                         y_d_hat_r, y_d_hat_g
                     )
-                    loss_disc_all = loss_disc + loss_spk_disc
-            if config.train.fp16_run:
-                scaler.scale(loss_disc_all).backward()
-                scaler.unscale_(optim_d)
-            else:
-                loss_disc_all.backward()
+                    loss_disc_all = loss_disc
+            optim_d.zero_grad()
+            #if config.train.fp16_run:
+            #    scaler.scale(loss_disc_all).backward()
+            #    scaler.unscale_(optim_d)
+            #else:
+            loss_disc_all.backward()
             grad_norm_d = commons.clip_grad_value_(chain(net_d.parameters(), net_g.emb_g.parameters()), None)
             if np.all([torch.all(torch.isfinite(p.grad)).detach().cpu().numpy() for p in chain(net_d.parameters(), net_g.emb_g.parameters()) if p.requires_grad and type(p.grad) is torch.Tensor]):
-                if config.train.fp16_run:
-                    scaler.step(optim_d)
-                else:
-                    optim_d.step()
+                #if config.train.fp16_run:
+                #    scaler.step(optim_d)
+                #else:
+                optim_d.step()
             else:
                 print("contains nan discriminater")
-            scaler.update()
-            # scheduler_g.step()
-            # scheduler_d.step()
+            # scaler.update()
+
+            scheduler_g.step()
+            scheduler_d.step()
 
             if is_main_process:
                 progress_bar.set_postfix(
@@ -849,42 +691,15 @@ def training_runner(
                     loss_g=float(loss_gen_all) if loss_gen_all is not None else 0.0,
                     loss_d=float(loss_disc) if loss_disc is not None else 0.0,
                     lr=float(lr) if lr is not None else 0.0,
-                    use_cache=use_cache,
+                    use_cache=0,
                 )
                 if global_step % config.train.log_interval == 0:
-                    if augment and step > 5 * len(train_loader):
-                        new_wave = commons.slice_segments(
-                            new_wave, ids_slice * config.data.hop_length, config.train.segment_size
-                        )
                     y_hat = torch.clip(y_hat, min=-1., max=1.)
                     for i in range(4):
                         torchaudio.save(filepath=os.path.join(training_dir, "logs", f"y_true_{i:02}.wav"), src=wave[i].detach().cpu().float(), sample_rate=int(sample_rate[:-1] + "000"))
                         torchaudio.save(filepath=os.path.join(training_dir, "logs", f"y_pred_{i:02}.wav"), src=y_hat[i].detach().cpu().float(), sample_rate=int(sample_rate[:-1] + "000"))
-                        if augment and step > 5 * len(train_loader):
+                        if augment and (finetuning or (step > config.train.augment_start_steps)):
                             torchaudio.save(filepath=os.path.join(training_dir, "logs", f"y_aug_{i:02}.wav"), src=new_wave[i].detach().cpu().float(), sample_rate=int(sample_rate[:-1] + "000"))
-                    with torch.no_grad():
-                        mel = spec_to_mel_torch(
-                            spec,
-                            config.data.filter_length,
-                            config.data.n_mel_channels,
-                            config.data.sampling_rate,
-                            config.data.mel_fmin,
-                            config.data.mel_fmax,
-                        )
-                        y_mel = commons.slice_segments(
-                            mel, ids_slice, config.train.segment_size // config.data.hop_length
-                        )
-                        with autocast(enabled=False):
-                            y_hat_mel = mel_spectrogram_torch(
-                                y_hat.float().squeeze(1),
-                                config.data.filter_length,
-                                config.data.n_mel_channels,
-                                config.data.sampling_rate,
-                                config.data.hop_length,
-                                config.data.win_length,
-                                config.data.mel_fmin,
-                                config.data.mel_fmax,
-                            )
                     lr = optim_g.param_groups[0]["lr"]
                     # Amor For Tensorboard display
                     if loss_mel > 50:
@@ -896,7 +711,7 @@ def training_runner(
                         "learning_rate": lr,
                         "grad_norm_d": grad_norm_d,
                         "grad_norm_g": grad_norm_g,
-                        "loss/spk": (loss_spk_gen + loss_spk_disc) / 2
+                        "loss/spk": loss_spk
                     }
                     scalar_dict.update(
                         {
@@ -904,7 +719,6 @@ def training_runner(
                             "loss/g/mel": loss_mel,
                         }
                     )
-
                     scalar_dict.update(
                         {"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)}
                     )
@@ -922,13 +736,10 @@ def training_runner(
                     )
                     image_dict = {
                         "slice/mel_org": utils.plot_spectrogram_to_numpy(
-                            y_mel[0].data.cpu().numpy()
+                            y_mel[0][0].data.cpu().numpy()
                         ),
                         "slice/mel_gen": utils.plot_spectrogram_to_numpy(
-                            y_hat_mel[0].data.cpu().numpy()
-                        ),
-                        "all/mel": utils.plot_spectrogram_to_numpy(
-                            mel[0].data.cpu().numpy()
+                            y_hat_mel[0][0].data.cpu().numpy()
                         ),
                     }
                     utils.summarize(
@@ -975,9 +786,8 @@ def training_runner(
                 embedding_output_layer,
                 os.path.join(training_dir, "checkpoints", f"{model_name}-{epoch}.pth"),
                 epoch,
+                speaker_info
             )
-
-
 
     if is_main_process:
         print("Training is done. The program is closed.")
@@ -991,4 +801,5 @@ def training_runner(
             embedding_output_layer,
             os.path.join(out_dir, f"{model_name}.pth"),
             epoch,
+            speaker_info
         )

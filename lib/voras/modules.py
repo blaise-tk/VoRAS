@@ -15,40 +15,6 @@ from .transforms import piecewise_rational_quadratic_transform
 
 LRELU_SLOPE = 0.1
 
-class HarmonicEmbedder(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, gin_channels, num_head, num_harmonic=0, f0_min=50., f0_max=1100., device="cuda"):
-        super(HarmonicEmbedder, self).__init__()
-        self.embedding_dim = embedding_dim
-        self.num_head = num_head
-        self.num_harmonic = num_harmonic
-
-        f0_mel_min = np.log(1 + f0_min / 700)
-        f0_mel_max = np.log(1 + f0_max * (1 + num_harmonic) / 700)
-        self.sequence = torch.from_numpy(np.linspace(f0_mel_min, f0_mel_max, num_embeddings-2))
-        self.emb_layer = torch.nn.Embedding(num_embeddings, embedding_dim)
-        self.linear_q = Conv1d(gin_channels, num_head * (1 + num_harmonic), 1)
-        self.weight = None
-
-    def forward(self, x, g):
-        b, l = x.size()
-        non_zero = (x != 0.).to(dtype=torch.long).unsqueeze(1)
-        mel = torch.log(1 + x / 700).unsqueeze(1)
-        harmonies = torch.arange(1 + self.num_harmonic, device=x.device, dtype=x.dtype).view(1, 1 + self.num_harmonic, 1) + 1.
-        ix = torch.searchsorted(self.sequence.to(x.device), mel * harmonies).to(x.device) + 1
-        ix = ix * non_zero
-        emb = self.emb_layer(ix).transpose(1, 3).reshape(b, self.num_head, self.embedding_dim // self.num_head, 1 + self.num_harmonic, l)
-        if self.weight is None:
-            weight = torch.nn.functional.softmax(self.linear_q(g).reshape(b, self.num_head, 1, 1 + self.num_harmonic, 1), 3)
-        else:
-            weight = self.weight
-        res = torch.sum(emb * weight, dim=3).reshape(b, self.embedding_dim, l)
-        return res
-
-    def fix_speaker(self, g):
-        self.weight = torch.nn.functional.softmax(self.linear_q(g).reshape(1, self.num_head, 1, 1 + self.num_harmonic, 1), 3)
-
-    def unfix_speaker(self, g):
-        self.weight = None
 
 class LayerNorm(nn.Module):
     def __init__(self, channels, eps=1e-5):
@@ -108,46 +74,51 @@ class CausalConvTranspose1d(nn.Module):
 
 
 class LoRALinear1d(nn.Module):
-    def __init__(self, in_channels, out_channels, info_channels, r):
+    def __init__(self, in_channels, out_channels, info_channels, r_out):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.info_channels = info_channels
-        self.r = r
         self.main_fc = weight_norm(nn.Conv1d(in_channels, out_channels, 1))
-        self.adapter_in = nn.Conv1d(info_channels, in_channels * r, 1)
-        self.adapter_out = nn.Conv1d(info_channels, out_channels * r, 1)
-        nn.init.normal_(self.adapter_in.weight.data, 0, 0.01)
-        nn.init.constant_(self.adapter_out.weight.data, 1e-6)
-        self.adapter_in = weight_norm(self.adapter_in)
-        self.adapter_out = weight_norm(self.adapter_out)
-        self.speaker_fixed = False
+        self.rs = [r_out]
+        self.adapter_in = torch.nn.ModuleList([nn.Conv1d(info_channels, in_channels * r, 1, bias=False) for r in self.rs])
+        self.adapter_out = torch.nn.ModuleList([nn.Conv1d(info_channels, out_channels * r, 1, bias=False) for r in self.rs])
+        for i in range(len(self.rs)):
+            nn.init.normal_(self.adapter_in[i].weight.data, 0, 0.01)
+            self.adapter_in[i] = weight_norm(self.adapter_in[i])
+            nn.init.constant_(self.adapter_out[i].weight.data, 1e-7)
+            self.adapter_out[i] = weight_norm(self.adapter_out[i])
+        self.speaker_fixed = [False] * len(self.rs)
 
-    def forward(self, x, g):
+    def forward(self, x, g_out):
         x_ = self.main_fc(x)
-        if not self.speaker_fixed:
-            a_in = self.adapter_in(g).view(-1, self.in_channels, self.r)
-            a_out = self.adapter_out(g).view(-1, self.r, self.out_channels)
+        for i, g in enumerate([g_out]):
+            if self.speaker_fixed[i]:
+                continue
+            a_in = self.adapter_in[i](g).view(-1, self.in_channels, self.rs[i])
+            a_out = self.adapter_out[i](g).view(-1, self.rs[i], self.out_channels)
             l = torch.einsum("brl,brc->bcl", torch.einsum("bcl,bcr->brl", x, a_in), a_out)
             x_ = x_ + l
         return x_
 
     def remove_weight_norm(self):
+        for l in self.adapter_in:
+            remove_weight_norm(l)
+        for l in self.adapter_out:
+            remove_weight_norm(l)
         remove_weight_norm(self.main_fc)
-        remove_weight_norm(self.adapter_in)
-        remove_weight_norm(self.adapter_out)
 
-    def fix_speaker(self, g):
-        self.speaker_fixed = True
-        a_in = self.adapter_in(g).view(-1, self.in_channels, self.r)
-        a_out = self.adapter_out(g).view(-1, self.r, self.out_channels)
+    def fix_speaker(self, i, g):
+        self.speaker_fixed[i] = True
+        a_in = self.adapter_in[i](g).view(-1, self.in_channels, self.rs[i])
+        a_out = self.adapter_out[i](g).view(-1, self.rs[i], self.out_channels)
         weight = torch.einsum("bir,bro->oi", a_in, a_out).unsqueeze(2)
         self.main_fc.weight.data.add_(weight)
 
-    def unfix_speaker(self, g):
-        self.speaker_fixed = False
-        a_in = self.adapter_in(g).view(-1, self.in_channels, self.r)
-        a_out = self.adapter_out(g).view(-1, self.r, self.out_channels)
+    def unfix_speaker(self, i, g):
+        self.speaker_fixed[i] = False
+        a_in = self.adapter_in[i](g).view(-1, self.in_channels, self.rs[i])
+        a_out = self.adapter_out[i](g).view(-1, self.rs[i], self.out_channels)
         weight = torch.einsum("bir,bro->oi", a_in, a_out).unsqueeze(2)
         self.main_fc.weight.data.sub_(weight)
 
@@ -252,7 +223,7 @@ class ConvNext2d(torch.nn.Module):
 
 
 class WaveBlock(torch.nn.Module):
-    def __init__(self, inner_channels, gin_channels, kernel_sizes, strides, dilations, extend_rate, r):
+    def __init__(self, inner_channels, gin_channels, kernel_sizes, strides, dilations, extend_rate, r_out):
         super(WaveBlock, self).__init__()
         norm_f = weight_norm
         extend_channels = int(inner_channels * extend_rate)
@@ -266,20 +237,18 @@ class WaveBlock(torch.nn.Module):
         # self.norms = []
         for i, (k, s, d) in enumerate(zip(kernel_sizes, strides, dilations)):
             self.dconvs.append(DilatedCausalConv1d(inner_channels, inner_channels, k, stride=s, dilation=d, groups=inner_channels))
-            self.p1convs.append(LoRALinear1d(inner_channels, extend_channels, gin_channels, r))
-            self.p2convs.append(LoRALinear1d(extend_channels, inner_channels, gin_channels, r))
+            self.p1convs.append(LoRALinear1d(inner_channels, extend_channels, gin_channels, r_out))
+            self.p2convs.append(LoRALinear1d(extend_channels, inner_channels, gin_channels, r_out))
             self.norms.append(LayerNorm(inner_channels))
 
-    def forward(self, x, x_mask, g):
-        x *= x_mask
+    def forward(self, x, g_out):
         for i in range(len(self.dconvs)):
             residual = x.clone()
             x = self.dconvs[i](x)
             x = self.norms[i](x)
-            x *= x_mask
-            x = self.p1convs[i](x, g)
+            x = self.p1convs[i](x, g_out)
             x = self.act(x)
-            x = self.p2convs[i](x, g)
+            x = self.p2convs[i](x, g_out)
             x = residual + x
         return x
 
@@ -291,17 +260,17 @@ class WaveBlock(torch.nn.Module):
         for c in self.p2convs:
             c.remove_weight_norm()
 
-    def fix_speaker(self, g):
+    def fix_speaker(self, i, g):
         for c in self.p1convs:
-            c.fix_speaker(g)
+            c.fix_speaker(i, g)
         for c in self.p2convs:
-            c.fix_speaker(g)
+            c.fix_speaker(i, g)
 
-    def unfix_speaker(self, g):
+    def unfix_speaker(self, i, g):
         for c in self.p1convs:
-            c.unfix_speaker(g)
+            c.unfix_speaker(i, g)
         for c in self.p2convs:
-            c.unfix_speaker(g)
+            c.unfix_speaker(i, g)
 
 
 class SnakeFilter(torch.nn.Module):
@@ -425,6 +394,77 @@ class IMDCT(nn.Module):
         return audio.unsqueeze(1)
 
 
+class ISTFT(nn.Module):
+    """
+    Custom implementation of ISTFT since torch.istft doesn't allow custom padding (other than `center=True`) with
+    windowing. This is because the NOLA (Nonzero Overlap Add) check fails at the edges.
+    See issue: https://github.com/pytorch/pytorch/issues/62323
+    Specifically, in the context of neural vocoding we are interested in "same" padding analogous to CNNs.
+    The NOLA constraint is met as we trim padded samples anyway.
+
+    Args:
+        n_fft (int): Size of Fourier transform.
+        hop_length (int): The distance between neighboring sliding window frames.
+        win_length (int): The size of window frame and STFT filter.
+        padding (str, optional): Type of padding. Options are "center" or "same". Defaults to "same".
+    """
+
+    def __init__(self, n_fft: int, hop_length: int, win_length: int, padding: str = "same"):
+        super().__init__()
+        if padding not in ["center", "same"]:
+            raise ValueError("Padding must be 'center' or 'same'.")
+        self.padding = padding
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.win_length = win_length
+        window = torch.hann_window(win_length)
+        self.register_buffer("window", window)
+
+    def forward(self, spec: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the Inverse Short Time Fourier Transform (ISTFT) of a complex spectrogram.
+
+        Args:
+            spec (Tensor): Input complex spectrogram of shape (B, N, T), where B is the batch size,
+                            N is the number of frequency bins, and T is the number of time frames.
+
+        Returns:
+            Tensor: Reconstructed time-domain signal of shape (B, L), where L is the length of the output signal.
+        """
+        if self.padding == "center":
+            # Fallback to pytorch native implementation
+            return torch.istft(spec, self.n_fft, self.hop_length, self.win_length, self.window, center=True)
+        elif self.padding == "same":
+            pad = (self.win_length - self.hop_length) // 2
+        else:
+            raise ValueError("Padding must be 'center' or 'same'.")
+
+        assert spec.dim() == 3, "Expected a 3D tensor as input"
+        B, N, T = spec.shape
+
+        # Inverse FFT
+        ifft = torch.fft.irfft(spec, self.n_fft, dim=1, norm="backward")
+        ifft = ifft * self.window[None, :, None]
+
+        # Overlap and Add
+        output_size = (T - 1) * self.hop_length + self.win_length
+        y = torch.nn.functional.fold(
+            ifft, output_size=(1, output_size), kernel_size=(1, self.win_length), stride=(1, self.hop_length),
+        )[:, 0, 0, pad:-pad]
+
+        # Window envelope
+        window_sq = self.window.square().expand(1, T, -1).transpose(1, 2)
+        window_envelope = torch.nn.functional.fold(
+            window_sq, output_size=(1, output_size), kernel_size=(1, self.win_length), stride=(1, self.hop_length),
+        ).squeeze()[pad:-pad]
+
+        # Normalize
+        assert (window_envelope > 1e-11).all()
+        y = y / window_envelope
+
+        return y
+
+
 class IMDCTSymExpHead(FourierHead):
     """
     IMDCT Head module for predicting MDCT coefficients with symmetric exponential function
@@ -444,8 +484,9 @@ class IMDCTSymExpHead(FourierHead):
         super().__init__()
         out_dim = mdct_frame_len
         self.dconv = DilatedCausalConv1d(dim, dim, 5, 1, dim, 1)
-        self.pconv1 = LoRALinear1d(dim, dim * 2, gin_channels, 2)
-        self.pconv2 = LoRALinear1d(dim * 2, out_dim, gin_channels, 2)
+        self.pconv1 = LoRALinear1d(dim, dim * 2, gin_channels, 4, 8)
+        self.pconv2 = LoRALinear1d(dim * 2, out_dim, gin_channels, 4, 12)
+        #self.out = LoRALinear1d(dim, out_dim, gin_channels, 2, 12)
         self.act = torch.nn.GELU()
         self.imdct = IMDCT(frame_len=mdct_frame_len, padding=padding)
 
@@ -459,7 +500,7 @@ class IMDCTSymExpHead(FourierHead):
             with torch.no_grad():
                 self.pconv2.main_fc.weight.mul_(scale.view(-1, 1, 1))
 
-    def forward(self, x: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, g_in: torch.Tensor, g_out: torch.Tensor) -> torch.Tensor:
         """
         Forward pass of the IMDCTSymExpHead module.
 
@@ -471,9 +512,11 @@ class IMDCTSymExpHead(FourierHead):
             Tensor: Reconstructed time-domain audio signal of shape (B, T), where T is the length of the output signal.
         """
         x = self.dconv(x)
-        x = self.pconv1(x, g)
+        x = self.pconv1(x, g_in, g_out)
         x = self.act(x)
-        x = self.pconv2(x, g)
+        x = self.pconv2(x, g_in, g_out)
+        #x = self.act(x)
+        #x = self.out(x, g_in, g_out)
         x = symexp(x)
         x = torch.clip(x, min=-1e2, max=1e2)  # safeguard to prevent excessively large magnitudes
         audio = self.imdct(x)
@@ -484,13 +527,84 @@ class IMDCTSymExpHead(FourierHead):
         self.pconv1.remove_weight_norm()
         self.pconv2.remove_weight_norm()
 
-    def fix_speaker(self, g):
-        self.pconv1.fix_speaker(g)
-        self.pconv2.fix_speaker(g)
+    def fix_speaker(self, i, g):
+        self.pconv1.fix_speaker(i, g)
+        self.pconv2.fix_speaker(i, g)
 
-    def unfix_speaker(self, g):
-        self.pconv1.unfix_speaker(g)
-        self.pconv2.unfix_speaker(g)
+    def unfix_speaker(self, i, g):
+        self.pconv1.unfix_speaker(i, g)
+        self.pconv2.unfix_speaker(i, g)
+
+
+class ISTFTHead(FourierHead):
+    """
+    ISTFT Head module for predicting STFT complex coefficients.
+
+    Args:
+        dim (int): Hidden dimension of the model.
+        n_fft (int): Size of Fourier transform.
+        hop_length (int): The distance between neighboring sliding window frames, which should align with
+                          the resolution of the input features.
+        padding (str, optional): Type of padding. Options are "center" or "same". Defaults to "same".
+    """
+
+    def __init__(self, dim: int, gin_channels: int, n_fft: int, hop_length: int, padding: str = "same"):
+        super().__init__()
+        out_dim = n_fft + 2
+        self.dconv = DilatedCausalConv1d(dim, dim, 5, 1, dim, 1)
+        self.pconv1 = LoRALinear1d(dim, dim * 3, gin_channels, 12)
+        self.pconv2 = LoRALinear1d(dim * 3, dim, gin_channels, 12)
+        self.out = LoRALinear1d(dim, out_dim, gin_channels, 16)
+        self.act = torch.nn.GELU()
+        self.istft = ISTFT(n_fft=n_fft, hop_length=hop_length, win_length=n_fft, padding=padding)
+
+    def forward(self, x: torch.Tensor, g_out: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the ISTFTHead module.
+
+        Args:
+            x (Tensor): Input tensor of shape (B, L, H), where B is the batch size,
+                        L is the sequence length, and H denotes the model dimension.
+
+        Returns:
+            Tensor: Reconstructed time-domain audio signal of shape (B, T), where T is the length of the output signal.
+        """
+        x = self.dconv(x)
+        x = self.pconv1(x, g_out)
+        x = self.act(x)
+        x = self.pconv2(x, g_out)
+        x = self.act(x)
+        x = self.out(x, g_out)
+        mag, p = x.chunk(2, dim=1)
+        mag = torch.exp(mag)
+        mag = torch.clip(mag, max=1e2)  # safeguard to prevent excessively large magnitudes
+        # wrapping happens here. These two lines produce real and imaginary value
+        x = torch.cos(p)
+        y = torch.sin(p)
+        # recalculating phase here does not produce anything new
+        # only costs time
+        # phase = torch.atan2(y, x)
+        # S = mag * torch.exp(phase * 1j)
+        # better directly produce the complex value
+        S = mag * (x + 1j * y)
+        audio = self.istft(S)
+        return audio.unsqueeze(1)
+
+    def remove_weight_norm(self):
+        self.dconv.remove_weight_norm()
+        self.pconv1.remove_weight_norm()
+        self.pconv2.remove_weight_norm()
+        self.out.remove_weight_norm()
+
+    def fix_speaker(self, i, g):
+        self.pconv1.fix_speaker(i, g)
+        self.pconv2.fix_speaker(i, g)
+        self.out.fix_speaker(i, g)
+
+    def unfix_speaker(self, i, g):
+        self.pconv1.fix_speaker(i, g)
+        self.pconv2.fix_speaker(i, g)
+        self.out.unfix_speaker(i, g)
 
 def symexp(x: torch.Tensor) -> torch.Tensor:
     return torch.sign(x) * (torch.exp(x.abs()) - 1)

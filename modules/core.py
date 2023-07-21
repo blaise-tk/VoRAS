@@ -31,37 +31,33 @@ def calc_sha256(filepath: str):
 
 
 def download_models():
-    def hash_check(url: str, out: str):
+    def exist_check(url: str, out: str):
         return os.path.exists(out)
-        #    return False
-        etag = get_hf_etag(url)
-        hash = calc_sha256(out)
-        return etag == hash
 
     os.makedirs(os.path.join(MODELS_DIR, "pretrained", "beta"), exist_ok=True)
 
     tasks = []
     for template in [
-        "f0D{}k",
-        "f0G{}k",
+        "D{}k",
+        "G{}k",
     ]:
         basename = template.format("24")
-        url = f"https://huggingface.co/datasets/nadare/voras/resolve/main/pretrained/beta/{basename}.pth"
+        url = f"https://huggingface.co/datasets/nadare/voras/resolve/main/{basename}.pth"
         out = os.path.join(MODELS_DIR, "pretrained", "beta", f"{basename}.pth")
 
-        if hash_check(url, out):
+        if exist_check(url, out):
             continue
 
         tasks.append((url, out))
 
 
     for filename in [
-        "voras_pretrained_augmenter.pt", "voras_pretrained_augmenter_speaker_info.npy"
+        "voras_pretrain_libritts_r.pth", "voras_sample_japanese.pth"
     ]:
         out = os.path.join(MODELS_DIR, "pretrained", "beta", filename)
-        url = f"https://huggingface.co/datasets/nadare/voras/resolve/main/pretrained/beta/{filename}"
+        url = f"https://huggingface.co/datasets/nadare/voras/resolve/main/{filename}"
 
-        if hash_check(url, out):
+        if exist_check(url, out):
             continue
 
         tasks.append((url,out))
@@ -71,7 +67,7 @@ def download_models():
     # NOTE: change filename?
     hubert_jp_url = f"https://huggingface.co/rinna/japanese-hubert-base/resolve/main/fairseq/model.pt"
     out = os.path.join(MODELS_DIR, "embeddings", "rinna_hubert_base_jp.pt")
-    if not hash_check(hubert_jp_url, out):
+    if not exist_check(hubert_jp_url, out):
         tasks.append(
             (
                 hubert_jp_url,
