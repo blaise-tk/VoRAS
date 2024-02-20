@@ -61,6 +61,6 @@ pip install torch==2.1.1 torchvision==0.16.1 torchaudio==2.1.1 --index-url https
 call "%CONDA_ROOT_PREFIX%\condabin\conda.bat" deactivate
 echo.
 
-echo RVC_CLI has been installed successfully!
+echo VoRAS has been installed successfully!
 pause
 cls

@@ -9,7 +9,6 @@ import scipy.signal as signal
 import torch
 import torch.nn.functional as F
 
-# from faiss.swigfaiss_avx2 import IndexIVFFlat # cause crash on windows' faiss-cpu installed from pip
 from fairseq.models.hubert import HubertModel
 
 from .models import SynthesizerTrnMs256NSFSid
