@@ -29,6 +29,7 @@ half_support = (
 
 if not half_support:
     print("WARNING: FP16 is not supported on this GPU")
+    print("Cuda GPU Name: ", torch.cuda.get_device_name())
     is_half = False
 
 device = "cuda:0"

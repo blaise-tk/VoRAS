@@ -58,44 +58,6 @@ def commit_hash():
     return stored_commit_hash
 
 
-def prepare_environment():
-    commit = commit_hash()
-    print(f"Python {sys.version}")
-    print(f"Commit hash: {commit}")
-
-    if "--skip-install" in sys.argv:
-        sys.argv.remove("--skip-install")
-        return
-
-    if (
-        "--reinstall-torch" in sys.argv
-        or not is_installed("torch")
-        or not is_installed("torchvision")
-    ):
-        torch_command = os.environ.get(
-            "TORCH_COMMAND",
-            "pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118",
-        )
-        run(
-            f'"{python}" -m {torch_command}',
-            "Installing torch and torchvision",
-            "Couldn't install torch",
-        )
-
-    if "--ngrok" in sys.argv and not is_installed("pyngrok"):
-        run(
-            f'"{python}" -m pip install pyngrok',
-            "Installing pyngrok",
-            "Couldn't install pyngrok",
-        )
-
-    run(
-        f'"{python}" -m pip install -r requirements.txt',
-        "Installing requirements",
-        "Couldn't install requirements",
-    )
-
-
 def start():
     os.environ["PATH"] = (
         os.path.join(os.path.dirname(__file__), "bin")
@@ -108,5 +70,4 @@ def start():
 if __name__ == "__main__":
     commandline_args = os.environ.get("COMMANDLINE_ARGS", "")
     sys.argv += shlex.split(commandline_args)
-    prepare_environment()
     start()
