@@ -17,8 +17,13 @@ from torch import Tensor
 
 from lib.voras.models import Synthesizer
 from modules.cmd_opts import opts
-from modules.models import (EMBEDDINGS_LIST, MODELS_DIR, get_embedder,
-                            get_vc_model, update_state_dict)
+from modules.models import (
+    EMBEDDINGS_LIST,
+    MODELS_DIR,
+    get_embedder,
+    get_vc_model,
+    update_state_dict,
+)
 from modules.shared import ROOT_DIR, device, is_half
 
 MODELS_DIR = opts.models_dir or os.path.join(ROOT_DIR, "models")
@@ -95,20 +100,30 @@ class VoiceServerModel:
         self.device = device
         self.is_half = is_half
 
-    def __call__(
-        self,
-        audio: np.ndarray,
-        sr: int,
-        sid: int
-    ):
+    def __call__(self, audio: np.ndarray, sr: int, sid: int):
         # bh, ah = signal.butter(N=5, Wn=48, btype="high", fs=16000)
         # audio = signal.filtfilt(bh, ah, audio)
         print(sr, audio.shape)
         if sr != self.sr:
-            audio = torchaudio.functional.resample(torch.from_numpy(audio), sr, self.sr, rolloff=0.99).detach().cpu().numpy()
+            audio = (
+                torchaudio.functional.resample(
+                    torch.from_numpy(audio), sr, self.sr, rolloff=0.99
+                )
+                .detach()
+                .cpu()
+                .numpy()
+            )
         print(sr, audio.shape)
-        audio = (audio / np.maximum(np.max(np.abs(audio), keepdims=True), 1e-7) * (.95 * .8)) + 0.2 * audio
-        audio_pad = np.pad(audio, (self.window // 2, self.window // 2), mode="reflect" if audio.shape[0] > self.window // 2 else "constant")
+        audio = (
+            audio
+            / np.maximum(np.max(np.abs(audio), keepdims=True), 1e-7)
+            * (0.95 * 0.8)
+        ) + 0.2 * audio
+        audio_pad = np.pad(
+            audio,
+            (self.window // 2, self.window // 2),
+            mode="reflect" if audio.shape[0] > self.window // 2 else "constant",
+        )
         print(audio_pad.shape)
 
         opt_ts = []
@@ -142,7 +157,6 @@ class VoiceServerModel:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         return audio_opt
-
 
     def _convert(
         self,
