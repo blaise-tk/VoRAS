@@ -25,14 +25,17 @@ from torch.utils.tensorboard import SummaryWriter
 from . import commons, utils
 from .checkpoints import save
 from .config import DatasetMetadata, TrainConfig
-from .data_utils import (DistributedBucketSampler, TextAudioCollate,
-                         TextAudioCollateMultiNSFsid, TextAudioLoader,
-                         TextAudioLoaderMultiNSFsid)
+from .data_utils import (
+    DistributedBucketSampler,
+    TextAudioCollate,
+    TextAudioCollateMultiNSFsid,
+    TextAudioLoader,
+    TextAudioLoaderMultiNSFsid,
+)
 from .losses import MelLoss, discriminator_loss, feature_loss, generator_loss
 from .mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 from .models import MultiPeriodDiscriminator, SynthesizerTrnMs256NSFSid
-from .preprocessing.extract_feature import (MODELS_DIR, get_embedder,
-                                            load_embedder)
+from .preprocessing.extract_feature import MODELS_DIR, get_embedder, load_embedder
 from .utils import AWP
 
 
@@ -147,7 +150,17 @@ def create_dataset_meta(training_dir: str, f0: bool):
         json.dump(meta, f, indent=2)
 
 
-def change_speaker(net_g, speaker_info, embedder, embedding_output_layer, phone, phone_lengths, pitch, pitchf, spec_lengths):
+def change_speaker(
+    net_g,
+    speaker_info,
+    embedder,
+    embedding_output_layer,
+    phone,
+    phone_lengths,
+    pitch,
+    pitchf,
+    spec_lengths,
+):
     """
     random change formant
     inspired by https://github.com/auspicious3000/contentvec/blob/d746688a32940f4bee410ed7c87ec9cf8ff04f74/contentvec/data/audio/audio_utils_1.py#L179
@@ -163,30 +176,39 @@ def change_speaker(net_g, speaker_info, embedder, embedding_output_layer, phone,
     f0_mel_max = 1127 * np.log(1 + f0_max / 700)
 
     pitch_median = torch.median(pitchf, 1).values
-    lo = 75. + 25. * (pitch_median >= 200).to(dtype=dtype)
-    hi = 250. + 150. * (pitch_median >= 200).to(dtype=dtype)
+    lo = 75.0 + 25.0 * (pitch_median >= 200).to(dtype=dtype)
+    hi = 250.0 + 150.0 * (pitch_median >= 200).to(dtype=dtype)
     pitch_median = torch.clip(pitch_median, lo, hi).unsqueeze(1)
 
-    shift_pitch = torch.exp2((1. - 2. * torch.rand(N)) / 2).unsqueeze(1).to(device, dtype)   # ピッチを1オクターブの範囲でずらす
+    shift_pitch = (
+        torch.exp2((1.0 - 2.0 * torch.rand(N)) / 2).unsqueeze(1).to(device, dtype)
+    )  # ピッチを1オクターブの範囲でずらす
 
     new_sid = np.random.choice(np.arange(len(speaker_info))[speaker_info > 0], size=N)
     rel_pitch = pitchf / pitch_median
-    new_pitch_median = torch.from_numpy(speaker_info[new_sid]).to(device, dtype).unsqueeze(1) * shift_pitch
+    new_pitch_median = (
+        torch.from_numpy(speaker_info[new_sid]).to(device, dtype).unsqueeze(1)
+        * shift_pitch
+    )
     new_pitchf = new_pitch_median * rel_pitch
     new_sid = torch.from_numpy(new_sid).to(device)
 
-    new_pitch = 1127. * torch.log(1. + new_pitchf / 700.)
-    new_pitch = (pitch - f0_mel_min) * (f0_bin - 2.) / (f0_mel_max - f0_mel_min) + 1.
+    new_pitch = 1127.0 * torch.log(1.0 + new_pitchf / 700.0)
+    new_pitch = (pitch - f0_mel_min) * (f0_bin - 2.0) / (f0_mel_max - f0_mel_min) + 1.0
     new_pitch = torch.clip(new_pitch, 1, f0_bin - 1).to(dtype=torch.int)
 
     new_wave = net_g.infer(phone, phone_lengths, new_pitch, new_pitchf, new_sid)[0]
-    new_wave_16k = torchaudio.functional.resample(new_wave, net_g.sr, 16000, rolloff=0.99).squeeze(1)
-    padding_mask = torch.arange(new_wave_16k.shape[1]).unsqueeze(0).to(device) > (spec_lengths.unsqueeze(1) * 160).to(device)
+    new_wave_16k = torchaudio.functional.resample(
+        new_wave, net_g.sr, 16000, rolloff=0.99
+    ).squeeze(1)
+    padding_mask = torch.arange(new_wave_16k.shape[1]).unsqueeze(0).to(device) > (
+        spec_lengths.unsqueeze(1) * 160
+    ).to(device)
 
     inputs = {
         "source": new_wave_16k.to(device, dtype),
         "padding_mask": padding_mask.to(device),
-        "output_layer": embedding_output_layer
+        "output_layer": embedding_output_layer,
     }
     logits = embedder.extract_features(**inputs)
     if phone.shape[-1] == 768:
@@ -195,7 +217,7 @@ def change_speaker(net_g, speaker_info, embedder, embedding_output_layer, phone,
         feats = embedder.final_proj(logits[0])
     feats = torch.repeat_interleave(feats, 2, 1)
     new_phone = torch.zeros(phone.shape).to(device, dtype)
-    new_phone[:, :feats.shape[1]] = feats[:, :phone.shape[1]]
+    new_phone[:, : feats.shape[1]] = feats[:, : phone.shape[1]]
     return new_phone.to(device), new_wave
 
 
@@ -442,7 +464,7 @@ def training_runner(
 
     train_loader = DataLoader(
         train_dataset,
-        num_workers = os.cpu_count() // 2,
+        num_workers=os.cpu_count() // 2,
         shuffle=False,
         pin_memory=True,
         collate_fn=collate_fn,
@@ -450,7 +472,7 @@ def training_runner(
         persistent_workers=True,
         prefetch_factor=2,
     )
-    
+
     net_g = SynthesizerTrnMs256NSFSid(
         config.data.filter_length // 2 + 1,
         config.train.segment_size // config.data.hop_length,
@@ -511,7 +533,7 @@ def training_runner(
         if not config.train.fp16_run:
             embedder = embedder.float()
 
-        if (augment_path is not None):
+        if augment_path is not None:
             state_dict = torch.load(augment_path, map_location="cpu")
             augment_net_g = SynthesizerTrnMs256NSFSid(
                 **state_dict["params"], is_half=False
@@ -529,8 +551,12 @@ def training_runner(
                     f0f = np.load(file.f0nsf)
                     if np.any(f0f > 0):
                         medians[file.speaker_id].append(np.median(f0f[f0f > 0]))
-                augment_speaker_info = np.array([np.median(x) if len(x) else 0. for x in medians])
-                np.save(os.path.join(training_dir, "speaker_info.npy"), augment_speaker_info)
+                augment_speaker_info = np.array(
+                    [np.median(x) if len(x) else 0.0 for x in medians]
+                )
+                np.save(
+                    os.path.join(training_dir, "speaker_info.npy"), augment_speaker_info
+                )
 
     if last_d_state is None or last_g_state is None:
         epoch = 1
@@ -579,7 +605,7 @@ def training_runner(
         win_length=config.data.win_length,
         hop_length=config.data.hop_length,
         f_min=config.data.mel_fmin,
-        f_max=config.data.mel_fmax
+        f_max=config.data.mel_fmax,
     ).to(device=device)
 
     cache = []
@@ -687,33 +713,49 @@ def training_runner(
             with autocast(enabled=config.train.fp16_run, dtype=torch.bfloat16):
                 if augment and step > 5 * len(train_loader):
                     with torch.no_grad():
-                        new_phone, new_wave = change_speaker(augment_net_g, augment_speaker_info, embedder, embedding_output_layer, phone, phone_lengths, pitch, pitchf, spec_lengths)
-                        weight = (1 - np.power(.8, (step - 5 * len(train_loader)) / len(train_loader))) * torch.rand(phone.shape[0], 1, 1).to(phone.device, phone.dtype) # 学習の初期はそのままのphone embeddingを使う
-                        phone = phone * (1. - weight) + new_phone * weight
+                        new_phone, new_wave = change_speaker(
+                            augment_net_g,
+                            augment_speaker_info,
+                            embedder,
+                            embedding_output_layer,
+                            phone,
+                            phone_lengths,
+                            pitch,
+                            pitchf,
+                            spec_lengths,
+                        )
+                        weight = (
+                            1
+                            - np.power(
+                                0.8, (step - 5 * len(train_loader)) / len(train_loader)
+                            )
+                        ) * torch.rand(phone.shape[0], 1, 1).to(
+                            phone.device, phone.dtype
+                        )  # 学習の初期はそのままのphone embeddingを使う
+                        phone = phone * (1.0 - weight) + new_phone * weight
 
-                (
-                    y_hat,
-                    ids_slice,
-                    x_mask,
-                    g
-                ) = net_g(
+                (y_hat, ids_slice, x_mask, g) = net_g(
                     phone, phone_lengths, pitch, pitchf, wave, wave_lengths, sid
                 )
                 f0f = commons.slice_segments2(
-                    pitchf, ids_slice, config.train.segment_size // config.data.hop_length
+                    pitchf,
+                    ids_slice,
+                    config.train.segment_size // config.data.hop_length,
                 )
                 wave = commons.slice_segments(
                     wave, ids_slice * config.data.hop_length, config.train.segment_size
                 )  # slice
-                y_hat, wave = y_hat[:, :, :wave.shape[2]], wave[:, :, :y_hat.shape[2]]
+                y_hat, wave = y_hat[:, :, : wave.shape[2]], wave[:, :, : y_hat.shape[2]]
 
                 # Generator
                 y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(wave, y_hat, g.detach())
                 with autocast(enabled=False):
-                    loss_mel = mel_loss(y_hat.float(), wave.float()) * config.train.c_mel
+                    loss_mel = (
+                        mel_loss(y_hat.float(), wave.float()) * config.train.c_mel
+                    )
                     loss_fm = feature_loss(fmap_r, fmap_g)
                     loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                    loss_gen_all = loss_gen + loss_fm  + loss_mel
+                    loss_gen_all = loss_gen + loss_fm + loss_mel
             optim_g.zero_grad()
             if config.train.fp16_run:
                 scaler.scale(loss_gen_all).backward()
@@ -722,7 +764,13 @@ def training_runner(
                 loss_gen_all.backward()
             awp.restore()
             grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
-            if np.all([torch.all(torch.isfinite(p.grad)).detach().cpu().numpy() for p in net_g.parameters() if p.requires_grad and type(p.grad) is torch.Tensor]):
+            if np.all(
+                [
+                    torch.all(torch.isfinite(p.grad)).detach().cpu().numpy()
+                    for p in net_g.parameters()
+                    if p.requires_grad and type(p.grad) is torch.Tensor
+                ]
+            ):
                 if config.train.fp16_run:
                     scaler.step(optim_g)
                     scaler.update()
@@ -745,8 +793,16 @@ def training_runner(
                 scaler.unscale_(optim_d)
             else:
                 loss_disc.backward()
-            grad_norm_d = commons.clip_grad_value_(chain(net_d.parameters(), net_g.emb_g.parameters()), None)
-            if np.all([torch.all(torch.isfinite(p.grad)).detach().cpu().numpy() for p in chain(net_d.parameters(), net_g.emb_g.parameters()) if p.requires_grad and type(p.grad) is torch.Tensor]):
+            grad_norm_d = commons.clip_grad_value_(
+                chain(net_d.parameters(), net_g.emb_g.parameters()), None
+            )
+            if np.all(
+                [
+                    torch.all(torch.isfinite(p.grad)).detach().cpu().numpy()
+                    for p in chain(net_d.parameters(), net_g.emb_g.parameters())
+                    if p.requires_grad and type(p.grad) is torch.Tensor
+                ]
+            ):
                 if config.train.fp16_run:
                     scaler.step(optim_d)
                     scaler.update()
@@ -766,13 +822,33 @@ def training_runner(
                 if global_step % config.train.log_interval == 0:
                     if augment and step > 5 * len(train_loader):
                         new_wave = commons.slice_segments(
-                            new_wave, ids_slice * config.data.hop_length, config.train.segment_size
+                            new_wave,
+                            ids_slice * config.data.hop_length,
+                            config.train.segment_size,
                         )
                     for i in range(4):
-                        torchaudio.save(filepath=os.path.join(training_dir, "logs", f"y_true_{i:02}.wav"), src=wave[i].detach().cpu().float(), sample_rate=int(sample_rate[:-1] + "000"))
-                        torchaudio.save(filepath=os.path.join(training_dir, "logs", f"y_pred_{i:02}.wav"), src=y_hat[i].detach().cpu().float(), sample_rate=int(sample_rate[:-1] + "000"))
+                        torchaudio.save(
+                            filepath=os.path.join(
+                                training_dir, "logs", f"y_true_{i:02}.wav"
+                            ),
+                            src=wave[i].detach().cpu().float(),
+                            sample_rate=int(sample_rate[:-1] + "000"),
+                        )
+                        torchaudio.save(
+                            filepath=os.path.join(
+                                training_dir, "logs", f"y_pred_{i:02}.wav"
+                            ),
+                            src=y_hat[i].detach().cpu().float(),
+                            sample_rate=int(sample_rate[:-1] + "000"),
+                        )
                         if augment and step > 5 * len(train_loader):
-                            torchaudio.save(filepath=os.path.join(training_dir, "logs", f"y_aug_{i:02}.wav"), src=new_wave[i].detach().cpu().float(), sample_rate=int(sample_rate[:-1] + "000"))
+                            torchaudio.save(
+                                filepath=os.path.join(
+                                    training_dir, "logs", f"y_aug_{i:02}.wav"
+                                ),
+                                src=new_wave[i].detach().cpu().float(),
+                                sample_rate=int(sample_rate[:-1] + "000"),
+                            )
                     with torch.no_grad():
                         mel = spec_to_mel_torch(
                             spec,
@@ -783,7 +859,9 @@ def training_runner(
                             config.data.mel_fmax,
                         )
                         y_mel = commons.slice_segments(
-                            mel, ids_slice, config.train.segment_size // config.data.hop_length
+                            mel,
+                            ids_slice,
+                            config.train.segment_size // config.data.hop_length,
                         )
                         with autocast(enabled=False):
                             y_hat_mel = mel_spectrogram_torch(

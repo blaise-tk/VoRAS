@@ -13,11 +13,13 @@ from modules.server.model import VoiceServerModel
 model: Optional[VoiceServerModel] = None
 app = Flask(__name__)
 
-@app.route('/ping')
+
+@app.route("/ping")
 def ping():
     return make_response("server is alive", 200)
 
-@app.route('/upload_model', methods=['POST'])
+
+@app.route("/upload_model", methods=["POST"])
 def upload_model():
     """
     input:
@@ -39,7 +41,8 @@ def upload_model():
     else:
         return make_response("use post method", 400)
 
-@app.route('/convert_sound', methods=['POST'])
+
+@app.route("/convert_sound", methods=["POST"])
 def convert_sound():
     """
     input:
@@ -69,6 +72,7 @@ def convert_sound():
         return response
     else:
         return make_response("use post method", 400)
+
 
 if __name__ == "__main__":
     app.run()

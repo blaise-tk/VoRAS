@@ -31,8 +31,10 @@ class AWP:
     Fast AWP
     https://www.kaggle.com/code/junkoda/fast-awp
     """
-    def __init__(self, model, optimizer, *, adv_param='weight',
-                 adv_lr=0.01, adv_eps=0.01):
+
+    def __init__(
+        self, model, optimizer, *, adv_param="weight", adv_lr=0.01, adv_eps=0.01
+    ):
         self.model = model
         self.optimizer = optimizer
         self.adv_param = adv_param
@@ -51,8 +53,12 @@ class AWP:
     def _attack_step(self):
         e = 1e-6
         for name, param in self.model.named_parameters():
-            if param.requires_grad and param.grad is not None and self.adv_param in name:
-                grad = self.optimizer.state[param]['exp_avg']
+            if (
+                param.requires_grad
+                and param.grad is not None
+                and self.adv_param in name
+            ):
+                grad = self.optimizer.state[param]["exp_avg"]
                 norm_grad = torch.norm(grad)
                 norm_data = torch.norm(param.detach())
 
@@ -64,14 +70,20 @@ class AWP:
 
                     # Perturb along gradient
                     # w += (adv_lr * |w| / |grad|) * grad
-                    param.data.add_(grad, alpha=(self.adv_lr * (norm_data + e) / (norm_grad + e)))
+                    param.data.add_(
+                        grad, alpha=(self.adv_lr * (norm_data + e) / (norm_grad + e))
+                    )
 
                     # Apply the limit to the change
                     param.data.clamp_(param_min, param_max)
 
     def _save(self):
         for name, param in self.model.named_parameters():
-            if param.requires_grad and param.grad is not None and self.adv_param in name:
+            if (
+                param.requires_grad
+                and param.grad is not None
+                and self.adv_param in name
+            ):
                 if name not in self.backup:
                     self.backup[name] = param.clone().detach()
                 else:
@@ -89,44 +101,44 @@ class AWP:
 
 class CosineAnnealingWarmupRestarts(_LRScheduler):
     """
-        https://github.com/katsura-jp/pytorch-cosine-annealing-with-warmup/tree/master
-        optimizer (Optimizer): Wrapped optimizer.
-        first_cycle_steps (int): First cycle step size.
-        cycle_mult(float): Cycle steps magnification. Default: -1.
-        max_lr(float): First cycle's max learning rate. Default: 0.1.
-        min_lr(float): Min learning rate. Default: 0.001.
-        warmup_steps(int): Linear warmup step size. Default: 0.
-        gamma(float): Decrease rate of max learning rate by cycle. Default: 1.
-        last_epoch (int): The index of last epoch. Default: -1.
+    https://github.com/katsura-jp/pytorch-cosine-annealing-with-warmup/tree/master
+    optimizer (Optimizer): Wrapped optimizer.
+    first_cycle_steps (int): First cycle step size.
+    cycle_mult(float): Cycle steps magnification. Default: -1.
+    max_lr(float): First cycle's max learning rate. Default: 0.1.
+    min_lr(float): Min learning rate. Default: 0.001.
+    warmup_steps(int): Linear warmup step size. Default: 0.
+    gamma(float): Decrease rate of max learning rate by cycle. Default: 1.
+    last_epoch (int): The index of last epoch. Default: -1.
     """
 
     def __init__(
-            self,
-            optimizer : torch.optim.Optimizer,
-            first_cycle_steps : int,
-            cycle_mult : float = 1.,
-            max_lr : float = 0.1,
-            min_lr : float = 0.001,
-            first_lr: float = 0.0001,
-            warmup_steps : int = 0,
-            gamma : float = 1.,
-            last_epoch : int = -1
-        ):
+        self,
+        optimizer: torch.optim.Optimizer,
+        first_cycle_steps: int,
+        cycle_mult: float = 1.0,
+        max_lr: float = 0.1,
+        min_lr: float = 0.001,
+        first_lr: float = 0.0001,
+        warmup_steps: int = 0,
+        gamma: float = 1.0,
+        last_epoch: int = -1,
+    ):
         assert warmup_steps < first_cycle_steps
 
-        self.first_cycle_steps = first_cycle_steps # first cycle step size
-        self.cycle_mult = cycle_mult # cycle steps magnification
-        self.base_max_lr = max_lr # first max learning rate
+        self.first_cycle_steps = first_cycle_steps  # first cycle step size
+        self.cycle_mult = cycle_mult  # cycle steps magnification
+        self.base_max_lr = max_lr  # first max learning rate
         self.base_min_lr = min_lr
-        self.max_lr = max_lr # max learning rate in the current cycle
-        self.min_lr = min_lr # min learning rate
+        self.max_lr = max_lr  # max learning rate in the current cycle
+        self.min_lr = min_lr  # min learning rate
         self.first_lr = first_lr
-        self.warmup_steps = warmup_steps # warmup step size
-        self.gamma = gamma # decrease rate of max learning rate by cycle
+        self.warmup_steps = warmup_steps  # warmup step size
+        self.gamma = gamma  # decrease rate of max learning rate by cycle
 
-        self.cur_cycle_steps = first_cycle_steps # first cycle step size
-        self.cycle = 0 # cycle count
-        self.step_in_cycle = -1 # step size of the current cycle
+        self.cur_cycle_steps = first_cycle_steps  # first cycle step size
+        self.cycle = 0  # cycle count
+        self.step_in_cycle = -1  # step size of the current cycle
 
         super(CosineAnnealingWarmupRestarts, self).__init__(optimizer, last_epoch)
 
@@ -136,29 +148,51 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
     def init_lr(self):
         self.base_lrs = []
         for param_group in self.optimizer.param_groups:
-            param_group['lr'] = self.min_lr
+            param_group["lr"] = self.min_lr
             self.base_lrs.append(self.min_lr)
 
     def get_lr(self):
         if self.step_in_cycle == -1:
             return self.base_lrs
         elif self.step_in_cycle < self.warmup_steps:
-            return [np.exp((np.log(self.max_lr) - np.log(self.first_lr)) * self.step_in_cycle / self.warmup_steps + np.log(self.first_lr)) for _ in self.base_lrs]
+            return [
+                np.exp(
+                    (np.log(self.max_lr) - np.log(self.first_lr))
+                    * self.step_in_cycle
+                    / self.warmup_steps
+                    + np.log(self.first_lr)
+                )
+                for _ in self.base_lrs
+            ]
         else:
-            return [self.min_lr + (self.max_lr - self.min_lr) \
-                    * (1 + math.cos(2 * math.pi * (self.step_in_cycle - self.warmup_steps) / self.cur_cycle_steps)) / 2
-                    for _ in self.base_lrs]
+            return [
+                self.min_lr
+                + (self.max_lr - self.min_lr)
+                * (
+                    1
+                    + math.cos(
+                        2
+                        * math.pi
+                        * (self.step_in_cycle - self.warmup_steps)
+                        / self.cur_cycle_steps
+                    )
+                )
+                / 2
+                for _ in self.base_lrs
+            ]
 
     def step(self):
         epoch = self.last_epoch + 1
         self.step_in_cycle = self.step_in_cycle + 1
-        self.cycle = max(0, (self.step_in_cycle - self.warmup_steps) / self.cur_cycle_steps)
+        self.cycle = max(
+            0, (self.step_in_cycle - self.warmup_steps) / self.cur_cycle_steps
+        )
 
         self.max_lr = self.base_max_lr * (self.gamma**self.cycle)
         self.min_lr = self.base_min_lr * (self.gamma**self.cycle)
         self.last_epoch = math.floor(epoch)
         for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
-            param_group['lr'] = lr
+            param_group["lr"] = lr
 
 
 def load_audio(file: str, sr):

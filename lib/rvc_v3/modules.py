@@ -218,17 +218,38 @@ class WN(torch.nn.Module):
 
 
 class DilatedCausalConv1d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, groups=1, dilation=1, bias=True):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size=3,
+        stride=1,
+        groups=1,
+        dilation=1,
+        bias=True,
+    ):
         super(DilatedCausalConv1d, self).__init__()
         self.kernel_size = kernel_size
         self.dilation = dilation
         self.stride = stride
-        self.conv = weight_norm(nn.Conv1d(in_channels, out_channels, kernel_size, stride=stride, groups=groups, dilation=dilation, bias=bias))
+        self.conv = weight_norm(
+            nn.Conv1d(
+                in_channels,
+                out_channels,
+                kernel_size,
+                stride=stride,
+                groups=groups,
+                dilation=dilation,
+                bias=bias,
+            )
+        )
         init_weights(self.conv)
 
     def forward(self, x):
         x = torch.flip(x, [2])
-        x = F.pad(x, [0, (self.kernel_size - 1) * self.dilation], mode="constant", value=0.)
+        x = F.pad(
+            x, [0, (self.kernel_size - 1) * self.dilation], mode="constant", value=0.0
+        )
         size = x.shape[2] // self.stride
         x = self.conv(x)[:, :, :size]
         x = torch.flip(x, [2])
@@ -246,15 +267,20 @@ class CausalConvTranspose1d(nn.Module):
     Lout = Lin * stride + (kernel_rate - 1) * stride + output_padding
     output_paddingいらないね
     """
+
     def __init__(self, in_channels, out_channels, kernel_rate=3, stride=1, groups=1):
         super(CausalConvTranspose1d, self).__init__()
         kernel_size = kernel_rate * stride
         self.trim_size = (kernel_rate - 1) * stride
-        self.conv = weight_norm(nn.ConvTranspose1d(in_channels, out_channels, kernel_size, stride=stride, groups=groups))
+        self.conv = weight_norm(
+            nn.ConvTranspose1d(
+                in_channels, out_channels, kernel_size, stride=stride, groups=groups
+            )
+        )
 
     def forward(self, x):
         x = self.conv(x)
-        return x[:, :, :-self.trim_size]
+        return x[:, :, : -self.trim_size]
 
     def remove_weight_norm(self):
         remove_weight_norm(self.conv)
@@ -279,7 +305,9 @@ class LoRALinear1d(nn.Module):
     def forward(self, x, g):
         a_in = self.adapter_in(g).view(-1, self.in_channels, self.r)
         a_out = self.adapter_out(g).view(-1, self.r, self.out_channels)
-        x = self.main_fc(x) + torch.einsum("brl,brc->bcl", torch.einsum("bcl,bcr->brl", x, a_in), a_out)
+        x = self.main_fc(x) + torch.einsum(
+            "brl,brc->bcl", torch.einsum("bcl,bcr->brl", x, a_in), a_out
+        )
         return x
 
     def remove_weight_norm(self):
@@ -306,7 +334,9 @@ class LoRALinear2d(nn.Module):
     def forward(self, x, g):
         a_in = self.adapter_in(g).view(-1, self.in_channels, self.r)
         a_out = self.adapter_out(g).view(-1, self.r, self.out_channels)
-        x = self.main_fc(x) + torch.einsum("brhw,brc->bchw", torch.einsum("bchw,bcr->brhw", x, a_in), a_out)
+        x = self.main_fc(x) + torch.einsum(
+            "brhw,brc->bchw", torch.einsum("bchw,bcr->brhw", x, a_in), a_out
+        )
         return x
 
     def remove_weight_norm(self):
@@ -316,7 +346,18 @@ class LoRALinear2d(nn.Module):
 
 
 class WaveConv1D(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, gin_channels, kernel_sizes, strides, dilations, extend_ratio, r, use_spectral_norm=False):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        gin_channels,
+        kernel_sizes,
+        strides,
+        dilations,
+        extend_ratio,
+        r,
+        use_spectral_norm=False,
+    ):
         super(WaveConv1D, self).__init__()
         norm_f = weight_norm if use_spectral_norm == False else spectral_norm
         inner_channels = int(in_channels * extend_ratio)
@@ -324,7 +365,19 @@ class WaveConv1D(torch.nn.Module):
         # self.norms = []
         self.convs.append(LoRALinear1d(in_channels, inner_channels, gin_channels, r))
         for i, (k, s, d) in enumerate(zip(kernel_sizes, strides, dilations), start=1):
-            self.convs.append(norm_f(Conv1d(inner_channels, inner_channels, k, s, dilation=d, groups=inner_channels, padding=get_padding(k, d))))
+            self.convs.append(
+                norm_f(
+                    Conv1d(
+                        inner_channels,
+                        inner_channels,
+                        k,
+                        s,
+                        dilation=d,
+                        groups=inner_channels,
+                        padding=get_padding(k, d),
+                    )
+                )
+            )
             if i < len(kernel_sizes):
                 self.convs.append(norm_f(Conv1d(inner_channels, inner_channels, 1, 1)))
             else:
@@ -354,14 +407,37 @@ class MBConv2d(torch.nn.Module):
     """
     Causal MBConv2D
     """
-    def __init__(self, in_channels, out_channels, gin_channels, kernel_size, stride, extend_ratio, r, use_spectral_norm=False):
+
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        gin_channels,
+        kernel_size,
+        stride,
+        extend_ratio,
+        r,
+        use_spectral_norm=False,
+    ):
         super(MBConv2d, self).__init__()
         norm_f = weight_norm if use_spectral_norm == False else spectral_norm
         inner_channels = int(in_channels * extend_ratio)
         self.kernel_size = kernel_size
-        self.pre_pointwise = LoRALinear2d(in_channels, inner_channels, gin_channels, r=r)
-        self.depthwise = norm_f(Conv2d(inner_channels, inner_channels, kernel_size, stride, groups=inner_channels))
-        self.post_pointwise = LoRALinear2d(inner_channels, out_channels, gin_channels, r=r)
+        self.pre_pointwise = LoRALinear2d(
+            in_channels, inner_channels, gin_channels, r=r
+        )
+        self.depthwise = norm_f(
+            Conv2d(
+                inner_channels,
+                inner_channels,
+                kernel_size,
+                stride,
+                groups=inner_channels,
+            )
+        )
+        self.post_pointwise = LoRALinear2d(
+            inner_channels, out_channels, gin_channels, r=r
+        )
 
     def forward(self, x, g):
         x = self.pre_pointwise(x, g)
@@ -376,12 +452,25 @@ class ConvNext2d(torch.nn.Module):
     Causal ConvNext Block
     stride = 1 only
     """
-    def __init__(self, in_channels, out_channels, gin_channels, kernel_size, stride, extend_ratio, r, use_spectral_norm=False):
+
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        gin_channels,
+        kernel_size,
+        stride,
+        extend_ratio,
+        r,
+        use_spectral_norm=False,
+    ):
         super(ConvNext2d, self).__init__()
         norm_f = weight_norm if use_spectral_norm == False else spectral_norm
         inner_channels = int(in_channels * extend_ratio)
         self.kernel_size = kernel_size
-        self.dwconv = norm_f(Conv2d(in_channels, in_channels, kernel_size, stride, groups=in_channels))
+        self.dwconv = norm_f(
+            Conv2d(in_channels, in_channels, kernel_size, stride, groups=in_channels)
+        )
         self.pwconv1 = LoRALinear2d(in_channels, inner_channels, gin_channels, r=r)
         self.pwconv2 = LoRALinear2d(inner_channels, out_channels, gin_channels, r=r)
         self.act = nn.GELU()
@@ -402,7 +491,9 @@ class ConvNext2d(torch.nn.Module):
 
 
 class SqueezeExcitation1D(torch.nn.Module):
-    def __init__(self, input_channels, squeeze_channels, gin_channels, use_spectral_norm=False):
+    def __init__(
+        self, input_channels, squeeze_channels, gin_channels, use_spectral_norm=False
+    ):
         norm_f = weight_norm if use_spectral_norm == False else spectral_norm
         super(SqueezeExcitation1D, self).__init__()
         self.fc1 = LoRALinear1d(input_channels, squeeze_channels, gin_channels, 2)
@@ -427,9 +518,19 @@ class SqueezeExcitation1D(torch.nn.Module):
 
 
 class ResBlock1(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, gin_channels, kernel_sizes, strides, dilations, extend_ratio, r):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        gin_channels,
+        kernel_sizes,
+        strides,
+        dilations,
+        extend_ratio,
+        r,
+    ):
         super(ResBlock1, self).__init__()
-        norm_f = weight_norm 
+        norm_f = weight_norm
         inner_channels = int(in_channels * extend_ratio)
         self.dconvs = nn.ModuleList()
         self.pconvs = nn.ModuleList()
@@ -438,9 +539,20 @@ class ResBlock1(torch.nn.Module):
         self.init_conv = LoRALinear1d(in_channels, inner_channels, gin_channels, r)
         for i, (k, s, d) in enumerate(zip(kernel_sizes, strides, dilations)):
             self.norms.append(LayerNorm(inner_channels))
-            self.dconvs.append(DilatedCausalConv1d(inner_channels, inner_channels, k, stride=s, dilation=d, groups=inner_channels))
+            self.dconvs.append(
+                DilatedCausalConv1d(
+                    inner_channels,
+                    inner_channels,
+                    k,
+                    stride=s,
+                    dilation=d,
+                    groups=inner_channels,
+                )
+            )
             if i < len(kernel_sizes) - 1:
-                self.pconvs.append(LoRALinear1d(inner_channels, inner_channels, gin_channels, r))
+                self.pconvs.append(
+                    LoRALinear1d(inner_channels, inner_channels, gin_channels, r)
+                )
         self.out_conv = LoRALinear1d(inner_channels, out_channels, gin_channels, r)
         init_weights(self.init_conv)
         init_weights(self.out_conv)

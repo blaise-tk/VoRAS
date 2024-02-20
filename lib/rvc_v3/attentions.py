@@ -113,8 +113,12 @@ class MultiHeadAttention(nn.Module):
         self.conv_q = LoRALinear1d(channels, channels, gin_channels, 2)
         self.conv_k = LoRALinear1d(channels, channels, gin_channels, 2)
         self.conv_v = LoRALinear1d(channels, channels, gin_channels, 2)
-        self.conv_qkw = weight_norm(nn.Conv1d(channels, channels, 5, 1, groups=channels, padding=2))
-        self.conv_vw = weight_norm(nn.Conv1d(channels, channels, 5, 1, groups=channels, padding=2))
+        self.conv_qkw = weight_norm(
+            nn.Conv1d(channels, channels, 5, 1, groups=channels, padding=2)
+        )
+        self.conv_vw = weight_norm(
+            nn.Conv1d(channels, channels, 5, 1, groups=channels, padding=2)
+        )
         self.conv_o = LoRALinear1d(channels, out_channels, gin_channels, 2)
         self.drop = nn.Dropout(p_dropout)
 
@@ -336,7 +340,6 @@ class FFN(nn.Module):
         padding = [[0, 0], [0, 0], [pad_l, pad_r]]
         x = F.pad(x, commons.convert_pad_shape(padding))
         return x
-
 
     def remove_weight_norm(self):
         self.conv_1.remove_weight_norm()

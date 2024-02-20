@@ -29,8 +29,10 @@ class AWP:
     Fast AWP
     https://www.kaggle.com/code/junkoda/fast-awp
     """
-    def __init__(self, model, optimizer, *, adv_param='weight',
-                 adv_lr=0.01, adv_eps=0.01):
+
+    def __init__(
+        self, model, optimizer, *, adv_param="weight", adv_lr=0.01, adv_eps=0.01
+    ):
         self.model = model
         self.optimizer = optimizer
         self.adv_param = adv_param
@@ -49,8 +51,12 @@ class AWP:
     def _attack_step(self):
         e = 1e-6
         for name, param in self.model.named_parameters():
-            if param.requires_grad and param.grad is not None and self.adv_param in name:
-                grad = self.optimizer.state[param]['exp_avg']
+            if (
+                param.requires_grad
+                and param.grad is not None
+                and self.adv_param in name
+            ):
+                grad = self.optimizer.state[param]["exp_avg"]
                 norm_grad = torch.norm(grad)
                 norm_data = torch.norm(param.detach())
 
@@ -62,14 +68,20 @@ class AWP:
 
                     # Perturb along gradient
                     # w += (adv_lr * |w| / |grad|) * grad
-                    param.data.add_(grad, alpha=(self.adv_lr * (norm_data + e) / (norm_grad + e)))
+                    param.data.add_(
+                        grad, alpha=(self.adv_lr * (norm_data + e) / (norm_grad + e))
+                    )
 
                     # Apply the limit to the change
                     param.data.clamp_(param_min, param_max)
 
     def _save(self):
         for name, param in self.model.named_parameters():
-            if param.requires_grad and param.grad is not None and self.adv_param in name:
+            if (
+                param.requires_grad
+                and param.grad is not None
+                and self.adv_param in name
+            ):
                 if name not in self.backup:
                     self.backup[name] = param.clone().detach()
                 else:

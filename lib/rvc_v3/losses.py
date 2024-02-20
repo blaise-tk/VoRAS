@@ -6,10 +6,20 @@ from torch.nn import functional as F
 
 class MelLoss(nn.Module):
     """
-    Single-scale Spectral Loss. 
+    Single-scale Spectral Loss.
     """
 
-    def __init__(self, sample_rate, n_fft, win_length, hop_length, f_min, f_max, eps=1e-5, device="cuda"):
+    def __init__(
+        self,
+        sample_rate,
+        n_fft,
+        win_length,
+        hop_length,
+        f_min,
+        f_max,
+        eps=1e-5,
+        device="cuda",
+    ):
         super().__init__()
         self.n_fft = n_fft
         self.hop_length = n_fft // 2
@@ -25,19 +35,25 @@ class MelLoss(nn.Module):
             center=False,
             power=1,
             norm="slaney",
-            mel_scale="slaney"
+            mel_scale="slaney",
         )
 
     def forward(self, x_true, x_pred):
         x_true = torch.nn.functional.pad(
             x_true,
-            (int((self.n_fft - self.hop_length) / 2), int((self.n_fft - self.hop_length) / 2)),
+            (
+                int((self.n_fft - self.hop_length) / 2),
+                int((self.n_fft - self.hop_length) / 2),
+            ),
             mode="reflect",
         )
 
         x_pred = torch.nn.functional.pad(
             x_pred,
-            (int((self.n_fft - self.hop_length) / 2), int((self.n_fft - self.hop_length) / 2)),
+            (
+                int((self.n_fft - self.hop_length) / 2),
+                int((self.n_fft - self.hop_length) / 2),
+            ),
             mode="reflect",
         )
         x_pred = x_pred

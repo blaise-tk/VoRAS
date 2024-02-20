@@ -12,8 +12,14 @@ from torch.nn.utils import remove_weight_norm, spectral_norm, weight_norm
 
 from . import commons, modules
 from .commons import get_padding
-from .modules import (ConvNext2d, ISTFTHead, LayerNorm, LoRALinear1d,
-                      SnakeFilter, WaveBlock)
+from .modules import (
+    ConvNext2d,
+    ISTFTHead,
+    LayerNorm,
+    LoRALinear1d,
+    SnakeFilter,
+    WaveBlock,
+)
 
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_dir)
@@ -40,11 +46,25 @@ class GeneratorVoras(torch.nn.Module):
         self.n_layers = n_layers
         self.g_out_linear = weight_norm(nn.Conv1d(gin_channels, inter_channels, 1))
         self.resblocks = nn.ModuleList()
-        self.init_linear = LoRALinear1d(emb_channels, inter_channels, gin_channels, r_out=12)
+        self.init_linear = LoRALinear1d(
+            emb_channels, inter_channels, gin_channels, r_out=12
+        )
         for _ in range(self.n_layers):
-            self.resblocks.append(WaveBlock(inter_channels, gin_channels, [5] * 3, [1] * 3, [1, 2, 4], 3, r_out=12))
-        self.head = ISTFTHead(inter_channels, gin_channels, n_fft, hop_length, padding="center")
-        #self.head = IMDCTSymExpHead(inter_channels, gin_channels, hop_length, padding="center", sample_rate=sr)
+            self.resblocks.append(
+                WaveBlock(
+                    inter_channels,
+                    gin_channels,
+                    [5] * 3,
+                    [1] * 3,
+                    [1, 2, 4],
+                    3,
+                    r_out=12,
+                )
+            )
+        self.head = ISTFTHead(
+            inter_channels, gin_channels, n_fft, hop_length, padding="center"
+        )
+        # self.head = IMDCTSymExpHead(inter_channels, gin_channels, hop_length, padding="center", sample_rate=sr)
         self.post = SnakeFilter(4, 8, 9, 2, eps=1e-5)
 
     def forward(self, x, g_out):
@@ -91,7 +111,7 @@ class SpeakerEmbedder(torch.nn.Module):
             center=True,
             power=1,
             norm="slaney",
-            mel_scale="slaney"
+            mel_scale="slaney",
         )
         self.dwconvs = nn.ModuleList()
         self.pwconvs1 = nn.ModuleList()
@@ -100,16 +120,33 @@ class SpeakerEmbedder(torch.nn.Module):
         self.act = nn.GELU()
         inner_channels = gin_channels
         self.inner_channels = inner_channels
-        self.init_conv = weight_norm(Conv2d(1, inner_channels, (7, 7), stride=(2, 2), padding=(3, 3)))
+        self.init_conv = weight_norm(
+            Conv2d(1, inner_channels, (7, 7), stride=(2, 2), padding=(3, 3))
+        )
         for i in range(4):
             if i == 3:
                 k = 3
             else:
                 k = 9
-            self.dwconvs.append(weight_norm(Conv2d(inner_channels, inner_channels, (3, k), stride=(2, (k+1)//4), groups=inner_channels, padding=(1, k//2))))
+            self.dwconvs.append(
+                weight_norm(
+                    Conv2d(
+                        inner_channels,
+                        inner_channels,
+                        (3, k),
+                        stride=(2, (k + 1) // 4),
+                        groups=inner_channels,
+                        padding=(1, k // 2),
+                    )
+                )
+            )
             self.norms.append(LayerNorm(inner_channels))
-            self.pwconvs1.append(weight_norm(Conv2d(inner_channels, inner_channels * 4, (1, 1))))
-            self.pwconvs2.append(weight_norm(Conv2d(inner_channels * 4, inner_channels, (1, 1))))
+            self.pwconvs1.append(
+                weight_norm(Conv2d(inner_channels, inner_channels * 4, (1, 1)))
+            )
+            self.pwconvs2.append(
+                weight_norm(Conv2d(inner_channels * 4, inner_channels, (1, 1)))
+            )
         self.post = nn.Linear(inner_channels * 4, gin_channels)
         self.eps = 1e-7
         # self.weight = np.sqrt(2.) * np.log(self.spk_embed_dim + 1.)
@@ -157,12 +194,7 @@ class Synthesizer(nn.Module):
         self.sr = sr
 
         self.dec = GeneratorVoras(
-            emb_channels,
-            inter_channels,
-            gin_channels,
-            n_layers,
-            n_fft,
-            hop_length
+            emb_channels, inter_channels, gin_channels, n_layers, n_fft, hop_length
         )
         self.speaker_embedder = SpeakerEmbedder(gin_channels)
         self.emb_g = nn.Embedding(self.spk_embed_dim, gin_channels)
@@ -182,15 +214,17 @@ class Synthesizer(nn.Module):
 
     def change_speaker(self, target, sid: int):
         if self.speaker[target] is not None:
-            g = self.emb_g(torch.tensor(self.speaker[target]).to(self.emb_g.weight.data.device)).unsqueeze(-1)
+            g = self.emb_g(
+                torch.tensor(self.speaker[target]).to(self.emb_g.weight.data.device)
+            ).unsqueeze(-1)
             self.dec.unfix_speaker(target, g)
-        g = self.emb_g(torch.tensor(sid).to(self.emb_g.weight.data.device)).unsqueeze(-1)
+        g = self.emb_g(torch.tensor(sid).to(self.emb_g.weight.data.device)).unsqueeze(
+            -1
+        )
         self.dec.fix_speaker(target, g)
         self.speaker[target] = sid
 
-    def forward(
-        self, phone, ds
-        ):
+    def forward(self, phone, ds):
         g_out = self.emb_g(ds).unsqueeze(-1)
         x = torch.transpose(phone, 1, -1)
         o = self.dec(x, g_out)
@@ -204,14 +238,28 @@ class Synthesizer(nn.Module):
 
 
 class DiscriminatorP(torch.nn.Module):
-    def __init__(self, period, gin_channels, upsample_rates, final_dim=256, use_spectral_norm=False):
+    def __init__(
+        self,
+        period,
+        gin_channels,
+        upsample_rates,
+        final_dim=256,
+        use_spectral_norm=False,
+    ):
         super(DiscriminatorP, self).__init__()
         self.period = period
         self.use_spectral_norm = use_spectral_norm
         self.init_kernel_size = upsample_rates[-1] * 3
         norm_f = weight_norm if use_spectral_norm == False else spectral_norm
         N = len(upsample_rates)
-        self.init_conv = norm_f(Conv2d(1, final_dim // (2 ** (N - 1)), (self.init_kernel_size, 1), (upsample_rates[-1], 1)))
+        self.init_conv = norm_f(
+            Conv2d(
+                1,
+                final_dim // (2 ** (N - 1)),
+                (self.init_kernel_size, 1),
+                (upsample_rates[-1], 1),
+            )
+        )
         self.convs = nn.ModuleList()
         for i, u in enumerate(upsample_rates[::-1][1:], start=1):
             self.convs.append(
@@ -219,10 +267,10 @@ class DiscriminatorP(torch.nn.Module):
                     final_dim // (2 ** (N - i)),
                     final_dim // (2 ** (N - i - 1)),
                     gin_channels,
-                    (u*3, 1),
+                    (u * 3, 1),
                     (u, 1),
                     4,
-                    r=2 + i//2
+                    r=2 + i // 2,
                 )
             )
         self.conv_post = weight_norm(Conv2d(final_dim, 1, (3, 1), (1, 1)))
@@ -257,11 +305,14 @@ class DiscriminatorP(torch.nn.Module):
 
 
 class MultiPeriodDiscriminator(torch.nn.Module):
-    def __init__(self, upsample_rates, gin_channels, periods=[2, 3, 5, 7, 11, 17], **kwargs):
+    def __init__(
+        self, upsample_rates, gin_channels, periods=[2, 3, 5, 7, 11, 17], **kwargs
+    ):
         super(MultiPeriodDiscriminator, self).__init__()
 
         discs = [
-            DiscriminatorP(i, gin_channels, upsample_rates, use_spectral_norm=False) for i in periods
+            DiscriminatorP(i, gin_channels, upsample_rates, use_spectral_norm=False)
+            for i in periods
         ]
         self.ups = np.prod(upsample_rates)
         self.discriminators = nn.ModuleList(discs)

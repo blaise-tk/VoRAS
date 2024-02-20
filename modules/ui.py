@@ -145,7 +145,7 @@ def create_model_list_ui(speaker_id: bool = True, load: bool = True):
 
     def reload_model(raw=False):
         model_list = models.get_models()
-        #f len(model_list) > 0:
+        # f len(model_list) > 0:
         #    models.load_model(model_list[0])
 
         if models.vc_model is not None:
