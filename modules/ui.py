@@ -100,9 +100,12 @@ def webpath(fn):
 
 def create_ui():
     preload()
+
     block = gr.Blocks(theme="remilia/Ghostly", title="VoRAS")
 
     with block:
+        gr.Markdown("# VoRAS")
+        gr.Markdown("Vocos Retrieval and self-Augmentation for Speech")
         with gr.Tabs():
             tabs = load_tabs()
             for tab in tabs:
