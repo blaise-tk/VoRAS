@@ -85,6 +85,7 @@ def download_models():
             ),
         )
 
+
 def update_modelnames():
     if not os.path.exists(os.path.join(MODELS_DIR, "embeddings")):
         os.makedirs(os.path.join(MODELS_DIR, "embeddings"))

@@ -11,7 +11,9 @@ from .core import preload
 from .shared import ROOT_DIR
 
 import logging
+
 logging.getLogger("httpx").setLevel(logging.CRITICAL)
+
 
 class Tab:
     TABS_DIR = os.path.join(ROOT_DIR, "modules", "tabs")
