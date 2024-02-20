@@ -46,7 +46,7 @@ def slice_segments(x, ids_str, segment_size=4):
         idx_str = ids_str[i]
         idx_end = idx_str + segment_size
         r = x[i, :, idx_str:idx_end]
-        ret[i, :, :r.size(1)] = r
+        ret[i, :, : r.size(1)] = r
     return ret
 
 
@@ -56,7 +56,7 @@ def slice_segments2(x, ids_str, segment_size=4):
         idx_str = ids_str[i]
         idx_end = idx_str + segment_size
         r = x[i, idx_str:idx_end]
-        ret[i, :r.size(0)] = r
+        ret[i, : r.size(0)] = r
     return ret
 
 
@@ -64,7 +64,10 @@ def rand_slice_segments(x, x_lengths, segment_size=4, ids_str=None):
     b, d, t = x.size()
     if ids_str is None:
         ids_str = torch.zeros([b]).to(device=x.device, dtype=x_lengths.dtype)
-    ids_str_max = torch.maximum(torch.zeros_like(x_lengths).to(device=x_lengths.device ,dtype=x_lengths.dtype), x_lengths - segment_size + 1 - ids_str)
+    ids_str_max = torch.maximum(
+        torch.zeros_like(x_lengths).to(device=x_lengths.device, dtype=x_lengths.dtype),
+        x_lengths - segment_size + 1 - ids_str,
+    )
     ids_str += (torch.rand([b]).to(device=x.device) * ids_str_max).to(dtype=torch.long)
     ret = slice_segments(x, ids_str, segment_size)
     return ret, ids_str

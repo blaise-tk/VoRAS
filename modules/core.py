@@ -42,7 +42,9 @@ def download_models():
         "G{}k",
     ]:
         basename = template.format("24")
-        url = f"https://huggingface.co/datasets/nadare/voras/resolve/main/{basename}.pth"
+        url = (
+            f"https://huggingface.co/datasets/nadare/voras/resolve/main/{basename}.pth"
+        )
         out = os.path.join(MODELS_DIR, "pretrained", "beta", f"{basename}.pth")
 
         if exist_check(url, out):
@@ -50,17 +52,14 @@ def download_models():
 
         tasks.append((url, out))
 
-
-    for filename in [
-        "voras_pretrain_libritts_r.pth", "voras_sample_japanese.pth"
-    ]:
+    for filename in ["voras_pretrain_libritts_r.pth", "voras_sample_japanese.pth"]:
         out = os.path.join(MODELS_DIR, "pretrained", "beta", filename)
         url = f"https://huggingface.co/datasets/nadare/voras/resolve/main/{filename}"
 
         if exist_check(url, out):
             continue
 
-        tasks.append((url,out))
+        tasks.append((url, out))
 
     # japanese-hubert-base (Fairseq)
     # from official repo

@@ -75,7 +75,6 @@ class VoiceConvertModel:
         if not "emb_channels" in state_dict["params"]:
             state_dict["params"]["emb_channels"] = 256  # for backward compat.
 
-
         self.net_g = Synthesizer(**state_dict["params"])
 
         # del self.net_g.enc_q

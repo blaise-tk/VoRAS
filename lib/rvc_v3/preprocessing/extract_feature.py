@@ -11,7 +11,9 @@ import torch.nn.functional as F
 from fairseq import checkpoint_utils
 from tqdm import tqdm
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+ROOT_DIR = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 MODELS_DIR = os.path.join(ROOT_DIR, "models")
 EMBEDDINGS_LIST = {
     "hubert-base-japanese": (
@@ -21,6 +23,7 @@ EMBEDDINGS_LIST = {
     ),
     "contentvec": ("checkpoint_best_legacy_500.pt", "contentvec", "local"),
 }
+
 
 def get_embedder(embedder_name):
     if embedder_name in EMBEDDINGS_LIST:
@@ -118,9 +121,11 @@ def processor(
                                 feats = model[1].float()(feats).extract_features
                 else:
                     inputs = {
-                        "source": feats.half().to(device)
-                        if half_support
-                        else feats.to(device),
+                        "source": (
+                            feats.half().to(device)
+                            if half_support
+                            else feats.to(device)
+                        ),
                         "padding_mask": padding_mask.to(device),
                         "output_layer": embedding_output_layer,
                     }

@@ -7,10 +7,20 @@ from torch.nn import functional as F
 
 class MelLoss(nn.Module):
     """
-    Single-scale Spectral Loss. 
+    Single-scale Spectral Loss.
     """
 
-    def __init__(self, sample_rate, n_fft, win_length, hop_length, f_min, f_max, eps=1e-5, device="cuda"):
+    def __init__(
+        self,
+        sample_rate,
+        n_fft,
+        win_length,
+        hop_length,
+        f_min,
+        f_max,
+        eps=1e-5,
+        device="cuda",
+    ):
         super().__init__()
         self.n_fft = n_fft
         self.hop_length = hop_length
@@ -26,19 +36,25 @@ class MelLoss(nn.Module):
             center=True,
             power=1,
             norm="slaney",
-            mel_scale="slaney"
+            mel_scale="slaney",
         )
 
     def forward(self, x_true, x_pred):
         x_true = torch.nn.functional.pad(
             x_true.float(),
-            (int((self.n_fft - self.hop_length) / 2), int((self.n_fft - self.hop_length) / 2)),
+            (
+                int((self.n_fft - self.hop_length) / 2),
+                int((self.n_fft - self.hop_length) / 2),
+            ),
             mode="reflect",
         )
 
         x_pred = torch.nn.functional.pad(
             x_pred.float(),
-            (int((self.n_fft - self.hop_length) / 2), int((self.n_fft - self.hop_length) / 2)),
+            (
+                int((self.n_fft - self.hop_length) / 2),
+                int((self.n_fft - self.hop_length) / 2),
+            ),
             mode="reflect",
         )
 
@@ -74,6 +90,7 @@ def discriminator_loss(disc_real_outputs, disc_generated_outputs):
 
     return loss, r_losses, g_losses
 
+
 def generator_loss(disc_outputs):
     loss = 0
     gen_losses = []
@@ -85,15 +102,27 @@ def generator_loss(disc_outputs):
 
     return loss, gen_losses
 
+
 def contrastive_loss(g_in, sid, all_g):
     g_in = g_in.float()
     all_g = all_g.float()
-    g_in_normed = g_in / torch.clamp(torch.norm(g_in, p=2, dim=1, keepdim=True), min=1e-7)
-    all_g_normed = all_g / torch.clamp(torch.norm(all_g, p=2, dim=1, keepdim=True), min=1e-7)
-    weight = np.sqrt(2.) * np.log(all_g_normed.shape[0] - 1)
+    g_in_normed = g_in / torch.clamp(
+        torch.norm(g_in, p=2, dim=1, keepdim=True), min=1e-7
+    )
+    all_g_normed = all_g / torch.clamp(
+        torch.norm(all_g, p=2, dim=1, keepdim=True), min=1e-7
+    )
+    weight = np.sqrt(2.0) * np.log(all_g_normed.shape[0] - 1)
     score = weight * torch.einsum("bd,nd->bn", g_in_normed, all_g_normed)
     ix = torch.arange(g_in.shape[0])
     score_pos = score[ix, sid]
-    score_neg = torch.exp(torch.where(sid.unsqueeze(1) != torch.arange(all_g.shape[0]).unsqueeze(0).to(sid.device), score, -1e5)).sum(dim=1)
+    score_neg = torch.exp(
+        torch.where(
+            sid.unsqueeze(1)
+            != torch.arange(all_g.shape[0]).unsqueeze(0).to(sid.device),
+            score,
+            -1e5,
+        )
+    ).sum(dim=1)
     loss = (-score_pos + torch.log(torch.clamp(score_neg, min=1e-7))).mean()
     return loss

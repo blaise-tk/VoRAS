@@ -156,9 +156,11 @@ class VocalConvertPipeline(object):
                     feats = model[1](feats).extract_features
         else:
             inputs = {
-                "source": feats.half().to(self.device)
-                if half_support
-                else feats.to(self.device),
+                "source": (
+                    feats.half().to(self.device)
+                    if half_support
+                    else feats.to(self.device)
+                ),
                 "padding_mask": padding_mask.to(self.device),
                 "output_layer": embedding_output_layer,
             }

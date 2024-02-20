@@ -42,42 +42,11 @@ def create_trained_model(
                 "kernel_size": 5,
                 "p_dropout": 0,
                 "resblock": "1",
-                "resblock_kernel_sizes": [
-                3,
-                7,
-                11
-                ],
-                "resblock_dilation_sizes": [
-                [
-                    1,
-                    3,
-                    5
-                ],
-                [
-                    1,
-                    3,
-                    5
-                ],
-                [
-                    1,
-                    3,
-                    5
-                ]
-                ],
-                "upsample_rates": [
-                5,
-                6,
-                4,
-                4
-                ],
+                "resblock_kernel_sizes": [3, 7, 11],
+                "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+                "upsample_rates": [5, 6, 4, 4],
                 "upsample_initial_channel": 512,
-                "upsample_kernel_sizes": [
-                16,
-                16,
-                4,
-                4,
-                4
-                ],
+                "upsample_kernel_sizes": [16, 16, 4, 4, 4],
                 "use_spectral_norm": False,
                 "gin_channels": 256,
                 "emb_channels": 768,
@@ -201,4 +170,3 @@ def save(
     )
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     torch.save(state_dict, filepath)
-

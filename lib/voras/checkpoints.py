@@ -21,7 +21,7 @@ def create_trained_model(
     emb_ch: int,
     emb_output_layer: int,
     epoch: int,
-    speaker_info: Optional[dict[str, int]]
+    speaker_info: Optional[dict[str, int]],
 ):
     state_dict = OrderedDict()
     state_dict["weight"] = {}
@@ -36,12 +36,7 @@ def create_trained_model(
             "emb_channels": 768,
             "inter_channels": 512,
             "n_layers": 4,
-            "upsample_rates": [
-            5,
-            3,
-            4,
-            4
-            ],
+            "upsample_rates": [5, 3, 4, 4],
             "use_spectral_norm": False,
             "gin_channels": 256,
             "spk_embed_dim": 109 if speaker_info is None else len(speaker_info),
@@ -69,7 +64,7 @@ def save(
     emb_output_layer: int,
     filepath: str,
     epoch: int,
-    speaker_info: Optional[dict[str, int]]
+    speaker_info: Optional[dict[str, int]],
 ):
     if hasattr(model, "module"):
         state_dict = model.module.state_dict()
@@ -87,7 +82,7 @@ def save(
         emb_ch,
         emb_output_layer,
         epoch,
-        speaker_info
+        speaker_info,
     )
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     torch.save(state_dict, filepath)

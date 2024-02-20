@@ -8,6 +8,7 @@ import pyworld
 import scipy.signal as signal
 import torch
 import torch.nn.functional as F
+
 # from faiss.swigfaiss_avx2 import IndexIVFFlat # cause crash on windows' faiss-cpu installed from pip
 from fairseq.models.hubert import HubertModel
 from torch.cuda.amp import autocast
@@ -149,9 +150,11 @@ class VocalConvertPipeline(object):
                         feats = model[1](feats).extract_features
         else:
             inputs = {
-                "source": feats.half().to(self.device)
-                if half_support
-                else feats.to(self.device),
+                "source": (
+                    feats.half().to(self.device)
+                    if half_support
+                    else feats.to(self.device)
+                ),
                 "padding_mask": padding_mask.to(self.device),
                 "output_layer": embedding_output_layer,
             }

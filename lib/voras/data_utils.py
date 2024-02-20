@@ -56,7 +56,9 @@ class AudioLabelLoader(torch.utils.data.Dataset):
         if filename.endswith(".wav"):
             audio, sampling_rate = load_wav_to_torch(filename)
             if sampling_rate != self.sampling_rate:
-                audio = torchaudio.functional.resample(audio, sampling_rate, self.sampling_rate, rolloff=0.99)
+                audio = torchaudio.functional.resample(
+                    audio, sampling_rate, self.sampling_rate, rolloff=0.99
+                )
         else:
             audio = load_audio(filename, self.sampling_rate)
             audio = torch.FloatTensor(audio)
@@ -67,11 +69,24 @@ class AudioLabelLoader(torch.utils.data.Dataset):
         elif audio_normed.shape[0] == 2:
             audio_normed = audio_normed.mean(dim=0, keepdim=True)
 
-        audio_normed = (audio_normed / torch.clamp(audio_normed.abs().max(), min=1e-7) * (.95 * .8)) + 0.2 * audio_normed
+        audio_normed = (
+            audio_normed
+            / torch.clamp(audio_normed.abs().max(), min=1e-7)
+            * (0.95 * 0.8)
+        ) + 0.2 * audio_normed
         audio_trimed = torch.zeros([1, self.segment_size])
-        start =max(0, randint(-self.pre_silence, max(0, audio_normed.shape[1] - self.segment_size))) // (self.sampling_rate//100) * (self.sampling_rate//100)
-        audio_normed = audio_normed[:, start:start+self.segment_size]
-        audio_trimed[:, -audio_normed.shape[1]:] = audio_normed
+        start = (
+            max(
+                0,
+                randint(
+                    -self.pre_silence, max(0, audio_normed.shape[1] - self.segment_size)
+                ),
+            )
+            // (self.sampling_rate // 100)
+            * (self.sampling_rate // 100)
+        )
+        audio_normed = audio_normed[:, start : start + self.segment_size]
+        audio_trimed[:, -audio_normed.shape[1] :] = audio_normed
         return audio_trimed
 
     def __getitem__(self, index):
@@ -104,7 +119,7 @@ class AudioLabelCollate:
 
         for i in range(len(batch)):
             row = batch[i]
-            wave_padded[i, 0, -row[0].size(1):] = row[0]
+            wave_padded[i, 0, -row[0].size(1) :] = row[0]
             sid[i] = row[1]
 
         return (
