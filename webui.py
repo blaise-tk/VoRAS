@@ -6,8 +6,10 @@ from modules import cmd_opts, ui
 # ここにこんなコードを置くべきかはわからないけど…
 _list_dir = os.listdir
 
+
 def listdir4mac(path):
     return [file for file in _list_dir(path) if not file.startswith(".")]
+
 
 os.listdir = listdir4mac
 
