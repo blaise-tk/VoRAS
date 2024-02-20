@@ -10,6 +10,8 @@ from . import models, shared
 from .core import preload
 from .shared import ROOT_DIR
 
+import logging
+logging.getLogger("httpx").setLevel(logging.CRITICAL)
 
 class Tab:
     TABS_DIR = os.path.join(ROOT_DIR, "modules", "tabs")
@@ -96,34 +98,9 @@ def webpath(fn):
     return f"file={web_path}?{os.path.getmtime(fn)}"
 
 
-def javascript_html():
-    script_js = os.path.join(ROOT_DIR, "script.js")
-    head = f'<script type="text/javascript" src="{webpath(script_js)}"></script>\n'
-
-    return head
-
-
-def css_html():
-    return f'<link rel="stylesheet" property="stylesheet" href="{webpath(os.path.join(ROOT_DIR, "styles.css"))}">'
-
-
-def create_head():
-    head = ""
-    head += css_html()
-    head += javascript_html()
-
-    def template_response(*args, **kwargs):
-        res = shared.gradio_template_response_original(*args, **kwargs)
-        res.body = res.body.replace(b"</head>", f"{head}</head>".encode("utf8"))
-        res.init_headers()
-        return res
-
-    gradio.routes.templates.TemplateResponse = template_response
-
-
 def create_ui():
     preload()
-    block = gr.Blocks()
+    block = gr.Blocks(theme="remilia/Ghostly")
 
     with block:
         with gr.Tabs():
@@ -131,8 +108,6 @@ def create_ui():
             for tab in tabs:
                 with gr.Tab(tab.title()):
                     tab()
-
-    create_head()
 
     return block
 

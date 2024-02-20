@@ -16,11 +16,11 @@ proc = None
 
 
 def server_options_ui(show_out_dir=True):
-    with gr.Row().style(equal_height=False):
+    with gr.Row():
         with gr.Row():
             host = gr.Textbox(value="127.0.0.1", label="host")
             port = gr.Textbox(value="5001", label="port")
-    with gr.Row().style(equal_height=False):
+    with gr.Row():
         with gr.Row():
             rvc_model_file = gr.Textbox(
                 label="RVC model file path",
@@ -28,7 +28,7 @@ def server_options_ui(show_out_dir=True):
                     MODELS_DIR, "pretrained", "beta", "voras_sample_japanese.pth"
                 ),
             )
-    with gr.Row().style(equal_height=False):
+    with gr.Row():
         with gr.Row():
             input_voice_file = gr.Textbox(value="", label="input voice file path")
             speaker_id = gr.Number(
@@ -79,25 +79,24 @@ class Server(Tab):
             yield "convert succeed", (sr, audio)
 
         with gr.Group():
-            with gr.Box():
-                with gr.Column():
-                    (
-                        host,
-                        port,
-                        rvc_model_file,
-                        input_voice_file,
-                        speaker_id,
-                    ) = server_options_ui()
+            with gr.Column():
+                (
+                    host,
+                    port,
+                    rvc_model_file,
+                    input_voice_file,
+                    speaker_id,
+                ) = server_options_ui()
 
-                    with gr.Row().style(equal_height=False):
-                        with gr.Column():
-                            status = gr.Textbox(value="", label="Status")
-                            output = gr.Audio(label="Output", interactive=False)
+                with gr.Row():
+                    with gr.Column():
+                        status = gr.Textbox(value="", label="Status")
+                        output = gr.Audio(label="Output", interactive=False)
 
-                    with gr.Row():
-                        start_button = gr.Button("Start server", variant="primary")
-                        upload_button = gr.Button("Upload Model")
-                        convert_button = gr.Button("Convert Voice")
+                with gr.Row():
+                    start_button = gr.Button("Start server", variant="primary")
+                    upload_button = gr.Button("Upload Model")
+                    convert_button = gr.Button("Convert Voice")
 
         start_button.click(
             start,
