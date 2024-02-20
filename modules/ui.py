@@ -100,7 +100,7 @@ def webpath(fn):
 
 def create_ui():
     preload()
-    block = gr.Blocks(theme="remilia/Ghostly")
+    block = gr.Blocks(theme="remilia/Ghostly", title="VoRAS")
 
     with block:
         with gr.Tabs():
