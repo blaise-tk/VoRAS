@@ -1,4 +1,0 @@
-# -r main.txt
-
-black
-isort
