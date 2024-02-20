@@ -1,4 +1,4 @@
-# VoRAS (Vocos Retrieval and self-Augmentation for Speech)
+# VoRAS: Vocos Retrieval and self-Augmentation for Speech
 
 VoRAS is a model designed for fast and lightweight real-time voice modification in Japanese, derived from RVC.
 
