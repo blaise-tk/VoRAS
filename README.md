@@ -14,7 +14,7 @@ Development of VoRAS has been discontinued due to the absence of anticipated fur
 
 ## Windows
 
-To start the web UI, simply double click on `webui-user.bat`.
+To start the web UI, run the `launch.py` script.
 
 ```
 Tested environment: Windows 10, Python 3.10.9, torch 2.0.0+cu118
