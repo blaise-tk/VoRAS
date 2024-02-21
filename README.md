@@ -22,12 +22,6 @@ chmod +x run-install.sh
 ./run-install.sh
 ```
 
-### Using Makefile (for platforms such as [Paperspace](https://www.paperspace.com/))
-
-```
-make run-install
-```
-
 ## Usage
 
 ### Windows
