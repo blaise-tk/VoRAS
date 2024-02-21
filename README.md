@@ -7,8 +7,6 @@ VoRAS is a model designed for fast and lightweight voice cloning built upon [RVC
 
 ## Installation
 
-## Installation
-
 ### Windows
 
 ```bash
