@@ -1,50 +1,54 @@
 # VoRAS: Vocos Retrieval and self-Augmentation for Speech
 
-VoRAS is a model designed for fast and lightweight real-time voice modification in Japanese, derived from RVC.
+VoRAS is a model designed for fast and lightweight voice cloning built upon [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI), with the enhancement of utilizing [Vocos](https://github.com/gemelo-ai/vocos) as a replacement for the vocoder, and a restructuring of the overall model architecture to a more modern design.
 
-## Overview
+> [!IMPORTANT]  
+> VoRAS is still in the experimental development phase.
 
-VoRAS is built upon RVC, with the enhancement of utilizing Vocos as a replacement for the vocoder, and a restructuring of the overall model architecture to a more modern design.
+## Installation
 
-## Note
+## Installation
 
-Development of VoRAS has been discontinued due to the absence of anticipated further improvements in performance. Feel free to fork this repository if you wish to experiment with it further.
+### Windows
 
-# Launch
-
-## Windows
-
-To start the web UI, run `./install.bat` and `python env/app.py` script.
-
-```
-Tested environment: Windows 10, Python 3.10.9, torch 2.0.0+cu118
+```bash
+./run-install.bat
 ```
 
-# Troubleshooting
+### Linux
 
-## `error: Microsoft Visual C++ 14.0 or greater is required.`
+```bash
+chmod +x run-install.sh
+./run-install.sh
+```
 
-If you encounter this error, you need to install Microsoft C++ Build Tools.
+### Using Makefile (for platforms such as [Paperspace](https://www.paperspace.com/))
 
-### Step 1: Download the installer
+```
+make run-install
+```
 
-[Download Microsoft C++ Build Tools](https://visualstudio.microsoft.com/ja/thank-you-downloading-visual-studio/?sku=BuildTools&rel=16)
+## Usage
 
-### Step 2: Install `C++ Build Tools`
+### Windows
 
-Run the installer and select `C++ Build Tools` in the `Workloads` tab.
+```bash
+./run-voras.bat
+```
+
+### Linux
+
+```bash
+chmod +x run-voras.sh
+./run-voras.sh
+```
 
 # Credits
 
 VoRAS acknowledges the following projects and resources for their contributions:
 
-- [liujing04/Retrieval-based-Voice-Conversion-WebUI](https://github.com/liujing04/Retrieval-based-Voice-Conversion-WebUI)
+- [RVC-Project/Retrieval-based-Voice-Conversion-WebUI](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
+- [nadare881/voras-webui-beta](https://github.com/nadare881/voras-webui-beta)
 - [charactr-platform/Vocos](https://github.com/charactr-platform/vocos)
-- [ddPn08/rvc-webui](https://github.com/ddPn08/rvc-webui/tree/main)
 - [NVIDIA/BigVGAN](https://github.com/NVIDIA/BigVGAN)
-- [rinna/japanese-hubert-base](https://huggingface.co/rinna/japanese-hubert-base)
 - [teftef6220/Voice_Separation_and_Selection](https://github.com/teftef6220/Voice_Separation_and_Selection)
-- [あみたろの声素材工房](https://amitaro.net/)
-- [つくよみちゃん](https://tyc.rei-yumesaki.net/)
-- [刻鳴時雨 ITA コーパス読み上げ音声素材](https://booth.pm/ja/items/3640133)
-- [れぷりかどーる](https://kikyohiroto1227.wixsite.com/kikoto-utau)
