@@ -15,6 +15,7 @@ requests
 torch==2.1.1 
 torchvision==0.16.1 
 torchaudio==2.1.1
+torchcrepe
 faiss-cpu==1.7.3
 git+https://github.com/IAHispano/fairseq; sys_platform == 'linux'
 fairseq==0.12.2; sys_platform == 'win32'

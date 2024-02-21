@@ -1,27 +1,28 @@
-import os
+import gradio as gr
+import logging
+import sys
 
-from modules import cmd_opts, ui
-
-_list_dir = os.listdir
-
-
-def listdir4mac(path):
-    return [file for file in _list_dir(path) if not file.startswith(".")]
+# Tabs
+from tabs.server import server_tab
+from tabs.training import train_tab
 
 
-os.listdir = listdir4mac
+logging.getLogger("httpx").setLevel(logging.CRITICAL)
 
+with gr.Blocks(theme="remilia/Ghostly", title="VoRAS") as VoRAS:
 
-def webui():
-    app = ui.create_ui()
-    app.queue(64)
-    app = app.launch(
-        server_name=cmd_opts.opts.host,
-        server_port=cmd_opts.opts.port,
-        share=cmd_opts.opts.share,
-        inbrowser=True,
-    )
+    gr.Markdown("# VoRAS")
+    gr.Markdown("Vocos Retrieval and self-Augmentation for Speech")
+    with gr.Tabs():
+        with gr.Tab("Inference"):
+            server_tab()
+        with gr.Tab("Training"):
+            train_tab()
 
 
 if __name__ == "__main__":
-    webui()
+    VoRAS.launch(
+        share="--share" in sys.argv,
+        inbrowser="--open" in sys.argv,
+        server_port=6969,
+    )
