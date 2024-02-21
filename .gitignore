@@ -2,6 +2,7 @@
 *.zip
 *.pth
 *.pt
+*.exe
 *.index
 
 *.wav
