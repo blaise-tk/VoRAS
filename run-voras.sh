@@ -6,4 +6,5 @@ printf "\033]0;VoRAS\007"
  export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0
  
 clear
+python modules/download.py
 python app.py

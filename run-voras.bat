@@ -8,6 +8,7 @@ if not exist env (
     exit /b 1
 )
 
+env\python.exe modules\download.py
 env\python.exe app.py --open
 echo.
 pause

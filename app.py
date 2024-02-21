@@ -11,10 +11,6 @@ from tabs.training import train_tab
 # Remove httpx logging (to avoid spam)
 logging.getLogger("httpx").setLevel(logging.CRITICAL)
 
-subprocess.run(
-    ["python", os.path.join("modules", "core.py")],
-)
-
 with gr.Blocks(theme="remilia/Ghostly", title="VoRAS") as VoRAS:
     gr.Markdown("# VoRAS")
     gr.Markdown("Vocos Retrieval and self-Augmentation for Speech")
