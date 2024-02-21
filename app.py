@@ -1,16 +1,21 @@
 import gradio as gr
+import subprocess
 import logging
 import sys
+import os
 
 # Tabs
 from tabs.server import server_tab
 from tabs.training import train_tab
 
-
+# Remove httpx logging (to avoid spam)
 logging.getLogger("httpx").setLevel(logging.CRITICAL)
 
-with gr.Blocks(theme="remilia/Ghostly", title="VoRAS") as VoRAS:
+subprocess.run(
+    ["python", os.path.join("modules", "core.py")],
+)
 
+with gr.Blocks(theme="remilia/Ghostly", title="VoRAS") as VoRAS:
     gr.Markdown("# VoRAS")
     gr.Markdown("Vocos Retrieval and self-Augmentation for Speech")
     with gr.Tabs():
