@@ -3,7 +3,7 @@
 VoRAS is a model designed for fast and lightweight voice cloning built upon [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI), with the enhancement of utilizing [Vocos](https://github.com/gemelo-ai/vocos) as a replacement for the vocoder, and a restructuring of the overall model architecture to a more modern design.
 
 > [!IMPORTANT]  
-> VoRAS is still in the experimental development phase.
+> VoRAS is still in the experimental development phase (Inference is not working).
 
 ## Installation
 
